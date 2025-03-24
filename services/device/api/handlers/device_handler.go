@@ -209,6 +209,64 @@ func (h *DeviceHandler) ReceiveMessage(c *gin.Context) {
 	})
 }
 
+// BatchMessagesRequest represents a batch of messages to process
+type BatchMessagesRequest struct {
+	Messages []*models.DeviceMessage `json:"messages" binding:"required,min=1"`
+}
+
+// ReceiveBatchMessages handles receiving multiple messages from devices in a single request
+func (h *DeviceHandler) ReceiveBatchMessages(c *gin.Context) {
+	var batchRequest BatchMessagesRequest
+	if err := c.ShouldBindJSON(&batchRequest); err != nil {
+		h.log.WithError(err).Warn("Invalid batch message format")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid batch message format",
+		})
+		return
+	}
+	
+	// Check if we have messages
+	if len(batchRequest.Messages) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "No messages provided in batch",
+		})
+		return
+	}
+	
+	h.log.Infof("Received batch of %d messages", len(batchRequest.Messages))
+	
+	// Set sent via method for all messages
+	for _, msg := range batchRequest.Messages {
+		msg.SentVia = "api-batch"
+	}
+	
+	// Process the batch of messages
+	if err := h.service.BatchProcessMessages(c, batchRequest.Messages); err != nil {
+		h.log.WithError(err).Error("Failed to process batch messages")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to process batch messages",
+		})
+		return
+	}
+	
+	// Return success response with processor stats
+	c.JSON(http.StatusOK, gin.H{
+		"status":      "success",
+		"count":       len(batchRequest.Messages),
+		"queue_stats": h.service.GetProcessorStats(),
+	})
+}
+
+// GetProcessorStats returns statistics about the message processor
+func (h *DeviceHandler) GetProcessorStats(c *gin.Context) {
+	stats := h.service.GetProcessorStats()
+	
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"stats":  stats,
+	})
+}
+
 // GetDeviceMessages handles retrieving device messages
 func (h *DeviceHandler) GetDeviceMessages(c *gin.Context) {
 	idStr := c.Param("id")

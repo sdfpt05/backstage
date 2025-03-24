@@ -11,7 +11,7 @@ from datetime import datetime
 class DeviceUser(HttpUser):
     # Wait between 8-12 seconds between tasks
     # This creates an average of 10 seconds with some natural variation
-    wait_time = between(1, 2)
+    wait_time = between(0.1, 0.2)
     
     def on_start(self):
         """Load the devices file and pick a random device to simulate"""

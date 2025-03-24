@@ -28,7 +28,11 @@ func SetupRoutes(r *gin.Engine, svc service.Service, log *logrus.Logger) {
 		
 		// Device messages
 		devices.POST("/messages", deviceHandler.ReceiveMessage)
+		devices.POST("/messages/batch", deviceHandler.ReceiveBatchMessages) // New batch endpoint
 		devices.GET("/:id/messages", deviceHandler.GetDeviceMessages)
+		
+		// System monitoring endpoints
+		devices.GET("/stats/processor", deviceHandler.GetProcessorStats) // New monitoring endpoint
 	}
 	
 	// Organization routes

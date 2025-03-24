@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"time"
 	
 	"example.com/backstage/services/device/internal/cache"
@@ -40,6 +41,11 @@ type Service interface {
 	GetFirmwareRelease(ctx context.Context, id uint) (*models.FirmwareRelease, error)
 	ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareRelease, error)
 	ActivateFirmwareRelease(ctx context.Context, id uint) error
+	
+	// Enhanced operations for batch processing and monitoring
+	BatchProcessMessages(ctx context.Context, messages []*models.DeviceMessage) error
+	GetProcessorStats() map[string]interface{}
+	Shutdown() error
 }
 
 // service is an implementation of the Service interface
@@ -48,6 +54,7 @@ type service struct {
 	cache           cache.RedisClient
 	messagingClient messaging.ServiceBusClient
 	log             *logrus.Logger
+	msgProcessor    *MessageProcessor
 }
 
 // NewService creates a new service instance
@@ -57,11 +64,23 @@ func NewService(
 	messagingClient messaging.ServiceBusClient,
 	log *logrus.Logger,
 ) Service {
+	// Calculate optimal worker count based on available CPUs and a multiplier
+	// This helps ensure we have enough workers to handle concurrent requests
+	// without overwhelming the system
+	workerCount := runtime.NumCPU() * 2
+	if workerCount < 4 {
+		workerCount = 4 // Minimum 4 workers
+	}
+	
+	// Create message processor for asynchronous processing
+	msgProcessor := NewMessageProcessor(repo, cache, messagingClient, log, workerCount)
+	
 	return &service{
 		repo:            repo,
 		cache:           cache,
 		messagingClient: messagingClient,
 		log:             log,
+		msgProcessor:    msgProcessor,
 	}
 }
 
@@ -197,44 +216,42 @@ func (s *service) ProcessDeviceMessage(ctx context.Context, message *models.Devi
 		message.UUID = uuid.New().String()
 	}
 	
-	// Find the device by MCU
-	device, err := s.repo.FindDeviceByUID(ctx, message.DeviceMCU)
-	if err != nil {
-		// Create an error message
-		message.Error = true
-		message.ErrorMessage = fmt.Sprintf("Device not found: %s", message.DeviceMCU)
-	} else {
-		message.DeviceID = device.ID
-		message.Device = device
+	// Use the message processor for asynchronous processing
+	return s.msgProcessor.EnqueueMessage(message)
+}
+
+// BatchProcessMessages processes multiple messages in a batch
+func (s *service) BatchProcessMessages(ctx context.Context, messages []*models.DeviceMessage) error {
+	if len(messages) == 0 {
+		return nil
 	}
 	
-	// Save the message
-	if err := s.repo.SaveDeviceMessage(ctx, message); err != nil {
-		return fmt.Errorf("failed to save message: %w", err)
-	}
+	s.log.Infof("Processing batch of %d messages", len(messages))
 	
-	// // If device was found, publish the message to the message queue
-	// if !message.Error {
-	// 	// Use device UID as the session ID
-	// 	sessionID := message.DeviceMCU
+	// Enqueue each message for processing
+	for i, msg := range messages {
+		if msg.UUID == "" {
+			msg.UUID = uuid.New().String()
+		}
 		
-	// 	// Try to publish, but don't fail the entire operation if it doesn't work
-	// 	if err := s.messagingClient.SendMessage(ctx, message, sessionID); err != nil {
-	// 		s.log.WithError(err).Error("Failed to publish message")
-	// 		// We continue processing even if message publishing fails
-	// 		// This prevents the API from returning a 500 error to the client
-	// 	} else {
-	// 		// Mark as published only if successful
-	// 		now := time.Now()
-	// 		message.Published = true
-	// 		message.PublishedAt = &now
-			
-	// 		if err := s.repo.MarkMessageAsPublished(ctx, message.UUID); err != nil {
-	// 			s.log.WithError(err).Error("Failed to mark message as published")
-	// 		}
-	// 	}
-	// }
+		if err := s.msgProcessor.EnqueueMessage(msg); err != nil {
+			s.log.WithError(err).Errorf("Failed to enqueue message %d/%d", i+1, len(messages))
+			return err
+		}
+	}
 	
+	return nil
+}
+
+// GetProcessorStats returns statistics about the message processor
+func (s *service) GetProcessorStats() map[string]interface{} {
+	return s.msgProcessor.QueueStats()
+}
+
+// Shutdown gracefully stops the service
+func (s *service) Shutdown() error {
+	s.log.Info("Shutting down service...")
+	s.msgProcessor.Stop()
 	return nil
 }
 

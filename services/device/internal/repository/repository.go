@@ -6,6 +6,8 @@ import (
 	
 	"example.com/backstage/services/device/internal/database"
 	"example.com/backstage/services/device/internal/models"
+	
+	"gorm.io/gorm"
 )
 
 // Repository provides data access methods
@@ -22,6 +24,10 @@ type Repository interface {
 	FindDeviceMessageByUUID(ctx context.Context, uuid string) (*models.DeviceMessage, error)
 	ListDeviceMessages(ctx context.Context, deviceID uint, limit int) ([]*models.DeviceMessage, error)
 	MarkMessageAsPublished(ctx context.Context, uuid string) error
+	
+	// Batch operations - new methods for improved performance
+	SaveDeviceMessageBatch(ctx context.Context, messages []*models.DeviceMessage) error
+	MarkMessagesAsPublished(ctx context.Context, uuids []string) error
 	
 	// Organization operations
 	CreateOrganization(ctx context.Context, org *models.Organization) error
@@ -170,6 +176,58 @@ func (r *repo) MarkMessageAsPublished(ctx context.Context, uuid string) error {
 	now := time.Now()
 	return gormDB.Model(&models.DeviceMessage{}).
 		Where("uuid = ?", uuid).
+		Updates(map[string]interface{}{
+			"published":    true,
+			"published_at": now,
+		}).Error
+}
+
+// SaveDeviceMessageBatch saves multiple device messages in a single transaction
+// This is a new method for improved performance with batch operations
+func (r *repo) SaveDeviceMessageBatch(ctx context.Context, messages []*models.DeviceMessage) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	
+	// Use transaction for batch insertion
+	return gormDB.Transaction(func(tx *gorm.DB) error {
+		// Create in batches of 100
+		batchSize := 100
+		for i := 0; i < len(messages); i += batchSize {
+			end := i + batchSize
+			if end > len(messages) {
+				end = len(messages)
+			}
+			
+			if err := tx.Create(messages[i:end]).Error; err != nil {
+				return err
+			}
+		}
+		
+		return nil
+	})
+}
+
+// MarkMessagesAsPublished marks multiple messages as published in a single operation
+// This is a new method for improved performance with batch operations
+func (r *repo) MarkMessagesAsPublished(ctx context.Context, uuids []string) error {
+	if len(uuids) == 0 {
+		return nil
+	}
+	
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	
+	now := time.Now()
+	return gormDB.Model(&models.DeviceMessage{}).
+		Where("uuid IN ?", uuids).
 		Updates(map[string]interface{}{
 			"published":    true,
 			"published_at": now,

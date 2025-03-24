@@ -89,6 +89,14 @@ func main() {
 	// Shutdown gracefully
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	
+	// First, shut down the service to stop accepting new requests
+	log.Info("Shutting down service...")
+	if err := svc.Shutdown(); err != nil {
+		log.Warnf("Service shutdown error: %v", err)
+	}
+	
+	// Then shut down the HTTP server
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
