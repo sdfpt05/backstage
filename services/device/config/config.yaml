@@ -1,0 +1,33 @@
+# Device Service Configuration
+
+# Server configuration
+server:
+  port: 8091
+  mode: debug # Options: debug, release, test
+
+# Database configuration
+database:
+  host: localhost
+  port: 5432
+  user: device
+  password: device
+  dbname: device_service_db
+  sslmode: disable
+
+# Redis configuration
+redis:
+  host: localhost
+  port: 6379
+  password: "" # Empty for no password
+  db: 0
+
+# Azure Service Bus configuration
+servicebus:
+  connectionstring: "" # Set in environment or secure config
+  queuename: device-events
+
+# New Relic monitoring configuration
+newrelic:
+  appname: Device Service Local
+  licensekey: "" # Set in environment or secure config
+  enabled: false

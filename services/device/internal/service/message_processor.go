@@ -145,7 +145,7 @@ func (mp *MessageProcessor) processMessage(message *models.DeviceMessage) {
 			defer cancel()
 			
 			if err := mp.messagingClient.SendMessage(pubCtx, message, sessionID); err != nil {
-				// mp.log.WithError(err).Error("Failed to publish message")
+				mp.log.WithError(err).Error("Failed to publish message")
 				return
 			}
 			

@@ -1,8 +1,10 @@
 package config
 
 import (
-	"os"
-	"strconv"
+	"fmt"
+	"strings"
+
+	"github.com/spf13/viper"
 )
 
 // Config holds the service configuration
@@ -51,58 +53,118 @@ type NewRelicConfig struct {
 	Enabled    bool
 }
 
-// Load loads the configuration from environment variables
-func Load() (*Config, error) {
-	// Server
-	port, _ := strconv.Atoi(getEnv("PORT", "8091"))
-	mode := getEnv("GIN_MODE", "debug")
+// InitConfig initializes the configuration using Viper
+func InitConfig(cfgFile string) error {
+	// Set defaults for configuration
+	setDefaults()
 	
-	// Database
-	dbPort, _ := strconv.Atoi(getEnv("DB_PORT", "5432"))
+	// Use config file from the flag if provided
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		// Search for config in common directories with name "config"
+		viper.AddConfigPath(".")
+		viper.AddConfigPath("./config")
+		viper.AddConfigPath("/etc/device-service")
+		viper.SetConfigName("config")
+	}
 	
-	// Redis
-	redisPort, _ := strconv.Atoi(getEnv("REDIS_PORT", "6379"))
-	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
+	// Set environment variable prefix for config overrides
+	viper.SetEnvPrefix("DEVICE")
 	
-	// New Relic
-	nrEnabled, _ := strconv.ParseBool(getEnv("NEW_RELIC_ENABLED", "true"))
+	// Enable automatic environment variable binding
+	// For example, DEVICE_SERVER_PORT will override server.port
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
 	
-	return &Config{
-		Server: ServerConfig{
-			Port: port,
-			Mode: mode,
-		},
-		Database: DatabaseConfig{
-			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     dbPort,
-			User:     getEnv("DB_USER", "postgres"),
-			Password: getEnv("DB_PASSWORD", "postgres"),
-			DBName:   getEnv("DB_NAME", "device_service_db"),
-			SSLMode:  getEnv("DB_SSL_MODE", "disable"),
-		},
-		Redis: RedisConfig{
-			Host:     getEnv("REDIS_HOST", "localhost"),
-			Port:     redisPort,
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       redisDB,
-		},
-		ServiceBus: ServiceBusConfig{
-			ConnectionString: getEnv("SERVICEBUS_CONNECTION_STRING", "Endpoint=sb://staging-nvk-uksouth-ingestor-svcb.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=wpsyvmkLaD7K7I0pkV1jYIfr5D8JnKqiJl94RvsRWp8="),
-			QueueName:        getEnv("SERVICEBUS_QUEUE_NAME", "staging-prod-deliveries"),
-		},
-		NewRelic: NewRelicConfig{
-			AppName:    getEnv("NEW_RELIC_APP_NAME", "Device Service"),
-			LicenseKey: getEnv("NEW_RELIC_LICENSE_KEY", ""),
-			Enabled:    nrEnabled,
-		},
-	}, nil
+	// Read configuration
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			// Config file not found, using defaults and environment variables
+			fmt.Println("No config file found, using defaults and environment variables")
+		} else {
+			// Config file was found but another error occurred
+			return fmt.Errorf("error reading config file: %w", err)
+		}
+	} else {
+		fmt.Println("Using config file:", viper.ConfigFileUsed())
+	}
+	
+	return nil
 }
 
-// getEnv gets an environment variable or returns a default value
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
+// setDefaults sets default values for configuration
+func setDefaults() {
+	// Server defaults
+	viper.SetDefault("server.port", 8091)
+	viper.SetDefault("server.mode", "debug")
+	
+	// Database defaults
+	viper.SetDefault("database.host", "localhost")
+	viper.SetDefault("database.port", 5432)
+	viper.SetDefault("database.user", "device")
+	viper.SetDefault("database.password", "device")
+	viper.SetDefault("database.dbname", "device_service_db")
+	viper.SetDefault("database.sslmode", "disable")
+	
+	// Redis defaults
+	viper.SetDefault("redis.host", "localhost")
+	viper.SetDefault("redis.port", 6379)
+	viper.SetDefault("redis.password", "")
+	viper.SetDefault("redis.db", 0)
+	
+	// Service Bus defaults - no default connection string for security
+	viper.SetDefault("servicebus.queuename", "device-events")
+	
+	// New Relic defaults
+	viper.SetDefault("newrelic.appname", "Device Service Local")
+	viper.SetDefault("newrelic.enabled", false)
+}
+
+// Load loads the configuration
+func Load() (*Config, error) {
+	// Server
+	serverConfig := ServerConfig{
+		Port: viper.GetInt("server.port"),
+		Mode: viper.GetString("server.mode"),
 	}
-	return value
+	
+	// Database
+	dbConfig := DatabaseConfig{
+		Host:     viper.GetString("database.host"),
+		Port:     viper.GetInt("database.port"),
+		User:     viper.GetString("database.user"),
+		Password: viper.GetString("database.password"),
+		DBName:   viper.GetString("database.dbname"),
+		SSLMode:  viper.GetString("database.sslmode"),
+	}
+	
+	// Redis
+	redisConfig := RedisConfig{
+		Host:     viper.GetString("redis.host"),
+		Port:     viper.GetInt("redis.port"),
+		Password: viper.GetString("redis.password"),
+		DB:       viper.GetInt("redis.db"),
+	}
+	
+	// Service Bus
+	serviceBusConfig := ServiceBusConfig{
+		ConnectionString: viper.GetString("servicebus.connectionstring"),
+		QueueName:        viper.GetString("servicebus.queuename"),
+	}
+	
+	// New Relic
+	newRelicConfig := NewRelicConfig{
+		AppName:    viper.GetString("newrelic.appname"),
+		LicenseKey: viper.GetString("newrelic.licensekey"),
+		Enabled:    viper.GetBool("newrelic.enabled"),
+	}
+	
+	return &Config{
+		Server:     serverConfig,
+		Database:   dbConfig,
+		Redis:      redisConfig,
+		ServiceBus: serviceBusConfig,
+		NewRelic:   newRelicConfig,
+	}, nil
 }
