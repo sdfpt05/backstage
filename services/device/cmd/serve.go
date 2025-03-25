@@ -91,9 +91,9 @@ func runServer() {
 	
 	// Initialize service
 	svc := service.NewService(repo, redisClient, sbClient, log)
-
+	
 	// Initialize and start the server
-	server := api.NewServer(cfg, log, nrApp, svc)
+	server := api.NewServer(cfg, log, nrApp, svc, repo) 
 	go func() {
 		log.Infof("Starting server on port %d (mode: %s)", cfg.Server.Port, cfg.Server.Mode)
 		if err := server.Start(); err != nil {

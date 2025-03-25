@@ -8,6 +8,7 @@ import (
 	"example.com/backstage/services/device/api/middleware"
 	"example.com/backstage/services/device/api/routes"
 	"example.com/backstage/services/device/config"
+	"example.com/backstage/services/device/internal/repository" // Add this import
 	"example.com/backstage/services/device/internal/service"
 	
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,7 @@ func NewServer(
 	log *logrus.Logger, 
 	nrApp *newrelic.Application,
 	svc service.Service,
+	repo repository.Repository, // Add this parameter
 ) *Server {
 	// Set Gin mode
 	gin.SetMode(config.Server.Mode)
@@ -45,8 +47,8 @@ func NewServer(
 		router.Use(middleware.NewRelicMiddleware(nrApp))
 	}
 	
-	// Set up routes
-	routes.SetupRoutes(router, svc, log)
+	// Set up routes with repository for auth
+	routes.SetupRoutes(router, svc, repo, log) // Pass repo here
 	
 	return &Server{
 		router: router,

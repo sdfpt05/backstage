@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	
+	"example.com/backstage/services/device/api/middleware" // Add this import
 	"example.com/backstage/services/device/internal/models"
 	"example.com/backstage/services/device/internal/service"
 	
@@ -294,4 +295,46 @@ func (h *DeviceHandler) GetDeviceMessages(c *gin.Context) {
 	}
 	
 	c.JSON(http.StatusOK, messages)
+}
+
+// ReceiveDeviceMessage handles receiving a message from a specific device
+func (h *DeviceHandler) ReceiveDeviceMessage(c *gin.Context) {
+	// Get device from context (placed there by middleware)
+	device, err := middleware.GetDeviceFromContext(c)
+	if err != nil {
+		h.log.WithError(err).Error("Failed to get device from context")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Internal server error",
+		})
+		return
+	}
+	
+	var message models.DeviceMessage
+	if err := c.ShouldBindJSON(&message); err != nil {
+		h.log.WithError(err).Warn("Invalid message format")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid message format",
+		})
+		return
+	}
+	
+	// Set the device information
+	message.DeviceMCU = device.UID
+	message.DeviceID = device.ID
+	message.Device = device
+	message.SentVia = "device-api"
+	
+	// Process the message
+	if err := h.service.ProcessDeviceMessage(c, &message); err != nil {
+		h.log.WithError(err).Error("Failed to process message")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to process message",
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"uuid":   message.UUID,
+	})
 }

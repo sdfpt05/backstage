@@ -40,6 +40,13 @@ type Repository interface {
 	UpdateFirmwareRelease(ctx context.Context, release *models.FirmwareRelease) error
 	FindFirmwareReleaseByID(ctx context.Context, id uint) (*models.FirmwareRelease, error)
 	ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareRelease, error)
+	
+	// APIKey operations
+	CreateAPIKey(ctx context.Context, apiKey *models.APIKey) error
+	GetAPIKeyByKey(ctx context.Context, key string) (*models.APIKey, error)
+	UpdateAPIKey(ctx context.Context, apiKey *models.APIKey) error
+	ListAPIKeys(ctx context.Context) ([]*models.APIKey, error)
+	DeleteAPIKey(ctx context.Context, id uint) error
 }
 
 // repo is an implementation of the Repository interface
@@ -334,4 +341,60 @@ func (r *repo) ListFirmwareReleases(ctx context.Context, releaseType models.Rele
 	}
 	
 	return releases, nil
+}
+
+// APIKey operations implementation
+func (r *repo) CreateAPIKey(ctx context.Context, apiKey *models.APIKey) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	
+	return gormDB.Create(apiKey).Error
+}
+
+func (r *repo) GetAPIKeyByKey(ctx context.Context, key string) (*models.APIKey, error) {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return nil, err
+	}
+	
+	var apiKey models.APIKey
+	if err := gormDB.Where("key = ?", key).First(&apiKey).Error; err != nil {
+		return nil, err
+	}
+	
+	return &apiKey, nil
+}
+
+func (r *repo) UpdateAPIKey(ctx context.Context, apiKey *models.APIKey) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	
+	return gormDB.Save(apiKey).Error
+}
+
+func (r *repo) ListAPIKeys(ctx context.Context) ([]*models.APIKey, error) {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return nil, err
+	}
+	
+	var apiKeys []*models.APIKey
+	if err := gormDB.Find(&apiKeys).Error; err != nil {
+		return nil, err
+	}
+	
+	return apiKeys, nil
+}
+
+func (r *repo) DeleteAPIKey(ctx context.Context, id uint) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	
+	return gormDB.Delete(&models.APIKey{}, id).Error
 }
