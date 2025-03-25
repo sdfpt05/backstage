@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"net/http"
-	"sales_service/internal/models"
-	"sales_service/internal/services"
-	"sales_service/internal/tracing"
+	"example.com/backstage/services/sales/internal/models"
+	"example.com/backstage/services/sales/internal/services"
+	"example.com/backstage/services/sales/internal/tracing"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -90,7 +90,7 @@ func (h *SalesHandler) HandleIncomingSalePayload(c *gin.Context) {
 		EVol:            req.EVol,
 		EventType:       req.EventType,
 		Ms:              req.Ms,
-		P:               req.P,
+		P:               req.Product,
 		RemainingVolume: req.RVol,
 		S:               req.S,
 		Time:            req.SaleTime,

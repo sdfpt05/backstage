@@ -6,25 +6,29 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
-	"sales_service/internal/models"
+	"example.com/backstage/services/sales/internal/models"
 )
 
 // DeviceRepository provides access to device data
 type DeviceRepository struct {
-	db *gorm.DB
+	db        *gorm.DB // Write database
+	readOnlyDB *gorm.DB // Read-only database
 }
 
 // NewDeviceRepository creates a new device repository
-func NewDeviceRepository(db *gorm.DB) *DeviceRepository {
-	return &DeviceRepository{db: db}
+func NewDeviceRepository(db *gorm.DB, readOnlyDB *gorm.DB) *DeviceRepository {
+	return &DeviceRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // GetByMCU gets a device by its MCU identifier
 func (r *DeviceRepository) GetByMCU(ctx context.Context, mcu string) (*models.Device, error) {
 	var device models.Device
-	err := r.db.WithContext(ctx).Where("mcu = ?", mcu).First(&device).Error
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).Where("mcu = ?", mcu).First(&device).Error
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get device by MCU")
 	}
@@ -33,18 +37,23 @@ func (r *DeviceRepository) GetByMCU(ctx context.Context, mcu string) (*models.De
 
 // DeviceMachineRevisionRepository provides access to device-machine revisions
 type DeviceMachineRevisionRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	readOnlyDB *gorm.DB
 }
 
 // NewDeviceMachineRevisionRepository creates a new repository
-func NewDeviceMachineRevisionRepository(db *gorm.DB) *DeviceMachineRevisionRepository {
-	return &DeviceMachineRevisionRepository{db: db}
+func NewDeviceMachineRevisionRepository(db *gorm.DB, readOnlyDB *gorm.DB) *DeviceMachineRevisionRepository {
+	return &DeviceMachineRevisionRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // GetActiveAtTime gets the active device-machine revision at a specific time
 func (r *DeviceMachineRevisionRepository) GetActiveAtTime(ctx context.Context, deviceID uuid.UUID, saleTime time.Time) (*models.DeviceMachineRevision, error) {
 	var revision models.DeviceMachineRevision
-	err := r.db.WithContext(ctx).
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).
 		Where("device_id = ? AND active = ? AND start <= ? AND (termination IS NULL OR termination > ?)",
 			deviceID, true, saleTime, saleTime).
 		First(&revision).Error
@@ -56,18 +65,23 @@ func (r *DeviceMachineRevisionRepository) GetActiveAtTime(ctx context.Context, d
 
 // MachineRevisionRepository provides access to machine revisions
 type MachineRevisionRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	readOnlyDB *gorm.DB
 }
 
 // NewMachineRevisionRepository creates a new repository
-func NewMachineRevisionRepository(db *gorm.DB) *MachineRevisionRepository {
-	return &MachineRevisionRepository{db: db}
+func NewMachineRevisionRepository(db *gorm.DB, readOnlyDB *gorm.DB) *MachineRevisionRepository {
+	return &MachineRevisionRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // GetActiveAtTime gets the active machine revision at a specific time
 func (r *MachineRevisionRepository) GetActiveAtTime(ctx context.Context, deviceMachineRevisionID uuid.UUID, saleTime time.Time) (*models.MachineRevision, error) {
 	var revision models.MachineRevision
-	err := r.db.WithContext(ctx).
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).
 		Where("device_machine_revision_id = ? AND start <= ? AND (terminate IS NULL OR terminate > ?)",
 			deviceMachineRevisionID, saleTime, saleTime).
 		First(&revision).Error
@@ -79,18 +93,23 @@ func (r *MachineRevisionRepository) GetActiveAtTime(ctx context.Context, deviceM
 
 // MachineRepository provides access to machine data
 type MachineRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	readOnlyDB *gorm.DB
 }
 
 // NewMachineRepository creates a new repository
-func NewMachineRepository(db *gorm.DB) *MachineRepository {
-	return &MachineRepository{db: db}
+func NewMachineRepository(db *gorm.DB, readOnlyDB *gorm.DB) *MachineRepository {
+	return &MachineRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // GetByID gets a machine by ID
 func (r *MachineRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Machine, error) {
 	var machine models.Machine
-	err := r.db.WithContext(ctx).First(&machine, id).Error
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).First(&machine, id).Error
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get machine by ID")
 	}
@@ -100,7 +119,8 @@ func (r *MachineRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.
 // GetAddress gets a machine's location address
 func (r *MachineRepository) GetAddress(ctx context.Context, machineID uuid.UUID) (string, error) {
 	var location models.Location
-	err := r.db.WithContext(ctx).Where("machine_id = ?", machineID).First(&location).Error
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).Where("machine_id = ?", machineID).First(&location).Error
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get machine location")
 	}
@@ -109,18 +129,23 @@ func (r *MachineRepository) GetAddress(ctx context.Context, machineID uuid.UUID)
 
 // TenantRepository provides access to tenant data
 type TenantRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	readOnlyDB *gorm.DB
 }
 
 // NewTenantRepository creates a new repository
-func NewTenantRepository(db *gorm.DB) *TenantRepository {
-	return &TenantRepository{db: db}
+func NewTenantRepository(db *gorm.DB, readOnlyDB *gorm.DB) *TenantRepository {
+	return &TenantRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // GetByID gets a tenant by ID
 func (r *TenantRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Tenant, error) {
 	var tenant models.Tenant
-	err := r.db.WithContext(ctx).First(&tenant, id).Error
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).First(&tenant, id).Error
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get tenant by ID")
 	}
@@ -129,23 +154,29 @@ func (r *TenantRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.T
 
 // DispenseSessionRepository provides access to dispense session data
 type DispenseSessionRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	readOnlyDB *gorm.DB
 }
 
 // NewDispenseSessionRepository creates a new repository
-func NewDispenseSessionRepository(db *gorm.DB) *DispenseSessionRepository {
-	return &DispenseSessionRepository{db: db}
+func NewDispenseSessionRepository(db *gorm.DB, readOnlyDB *gorm.DB) *DispenseSessionRepository {
+	return &DispenseSessionRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // Create creates a new dispense session
 func (r *DispenseSessionRepository) Create(ctx context.Context, session *models.DispenseSession) error {
+	// Use write DB for writes
 	return r.db.WithContext(ctx).Create(session).Error
 }
 
 // GetByID gets a dispense session by ID
 func (r *DispenseSessionRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.DispenseSession, error) {
 	var session models.DispenseSession
-	err := r.db.WithContext(ctx).First(&session, id).Error
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).First(&session, id).Error
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get dispense session by ID")
 	}
@@ -155,7 +186,8 @@ func (r *DispenseSessionRepository) GetByID(ctx context.Context, id uuid.UUID) (
 // GetUnprocessed gets unprocessed dispense sessions
 func (r *DispenseSessionRepository) GetUnprocessed(ctx context.Context, limit int) ([]models.DispenseSession, error) {
 	var sessions []models.DispenseSession
-	err := r.db.WithContext(ctx).
+	// Use read-only DB for reads
+	err := r.readOnlyDB.WithContext(ctx).
 		Where("is_processed = ? AND time IS NOT NULL", false).
 		Limit(limit).
 		Find(&sessions).Error
@@ -167,6 +199,7 @@ func (r *DispenseSessionRepository) GetUnprocessed(ctx context.Context, limit in
 
 // MarkAsProcessed marks a dispense session as processed
 func (r *DispenseSessionRepository) MarkAsProcessed(ctx context.Context, id uuid.UUID) error {
+	// Use write DB for writes
 	result := r.db.WithContext(ctx).
 		Model(&models.DispenseSession{}).
 		Where("id = ?", id).
@@ -185,16 +218,21 @@ func (r *DispenseSessionRepository) MarkAsProcessed(ctx context.Context, id uuid
 
 // SaleRepository provides access to sale data
 type SaleRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	readOnlyDB *gorm.DB
 }
 
 // NewSaleRepository creates a new repository
-func NewSaleRepository(db *gorm.DB) *SaleRepository {
-	return &SaleRepository{db: db}
+func NewSaleRepository(db *gorm.DB, readOnlyDB *gorm.DB) *SaleRepository {
+	return &SaleRepository{
+		db:        db,
+		readOnlyDB: readOnlyDB,
+	}
 }
 
 // Create creates a new sale
 func (r *SaleRepository) Create(ctx context.Context, sale *models.Sale) error {
+	// Use write DB for writes
 	return r.db.WithContext(ctx).Create(sale).Error
 }
 

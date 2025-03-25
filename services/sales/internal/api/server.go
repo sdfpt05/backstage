@@ -3,10 +3,10 @@ package api
 import (
 	"context"
 	"net/http"
-	"sales_service/config"
-	"sales_service/internal/api/handlers"
-	"sales_service/internal/services"
-	"sales_service/internal/tracing"
+	"example.com/backstage/services/sales/config"
+	"example.com/backstage/services/sales/internal/api/handlers"
+	"example.com/backstage/services/sales/internal/services"
+	"example.com/backstage/services/sales/internal/tracing"
 	"time"
 
 	"github.com/gin-gonic/gin"

@@ -4,17 +4,18 @@ import (
 	"context"
 	"os"
 	"os/signal"
-	"sales_service/config"
-	"sales_service/internal/cache"
-	"sales_service/internal/messaging"
-	"sales_service/internal/models"
-	"sales_service/internal/search"
-	"sales_service/internal/services"
-	"sales_service/internal/tracing"
+	"example.com/backstage/services/sales/config"
+	"example.com/backstage/services/sales/internal/cache"
+	"example.com/backstage/services/sales/internal/messaging"
+	"example.com/backstage/services/sales/internal/models"
+	"example.com/backstage/services/sales/internal/search"
+	"example.com/backstage/services/sales/internal/services"
+	"example.com/backstage/services/sales/internal/tracing"
 	"syscall"
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -54,8 +55,8 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// Create an error group to manage goroutines
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Initialize database connection
-	db, err := initDatabaseForWorker(cfg)
+	// Initialize database connections
+	db, readOnlyDB, err := initDatabasesForWorker(cfg)
 	if err != nil {
 		return err
 	}
@@ -79,7 +80,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize services
-	salesService := services.NewSalesService(db, redisCache, elasticClient, tracer)
+	salesService := services.NewSalesService(db, readOnlyDB, redisCache, elasticClient, tracer)
 
 	// Initialize Azure Service Bus client
 	azureBus, err := messaging.NewAzureServiceBus(cfg.Azure, tracer)
@@ -136,27 +137,45 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func initDatabaseForWorker(cfg config.Config) (*gorm.DB, error) {
+func initDatabasesForWorker(cfg config.Config) (*gorm.DB, *gorm.DB, error) {
+	// Initialize write database
 	db, err := gorm.Open(postgres.Open(cfg.DB.DSN), &gorm.Config{})
 	if err != nil {
-		return nil, err
+		return nil, nil, errors.Wrap(err, "failed to connect to write database")
 	}
 
-	// Auto-migrate the database
+	// Initialize read-only database
+	readOnlyDB, err := gorm.Open(postgres.Open(cfg.DB.ReadOnlyDSN), &gorm.Config{})
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "failed to connect to read-only database")
+	}
+
+	// Auto-migrate only the write database
 	if err := models.SetupModels(db); err != nil {
-		return nil, err
+		return nil, nil, errors.Wrap(err, "failed to run migrations")
 	}
 
-	// Get the underlying SQL DB
+	// Configure connection pools for both databases
 	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, err
+		return nil, nil, errors.Wrap(err, "failed to get underlying write DB connection")
 	}
 
-	// Set connection pool parameters for long-running processes
+	// Set connection pool parameters for write DB
 	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetMaxOpenConns(50)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	return db, nil
+	// Configure read-only connection pool
+	readSqlDB, err := readOnlyDB.DB()
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "failed to get underlying read-only DB connection")
+	}
+
+	// Set connection pool parameters for read-only DB (higher limits for read operations)
+	readSqlDB.SetMaxIdleConns(20)
+	readSqlDB.SetMaxOpenConns(100)
+	readSqlDB.SetConnMaxLifetime(time.Hour)
+
+	return db, readOnlyDB, nil
 }

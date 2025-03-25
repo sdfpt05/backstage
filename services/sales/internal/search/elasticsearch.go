@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"sales_service/config"
-	"sales_service/internal/models"
+	"example.com/backstage/services/sales/config"
+	"example.com/backstage/services/sales/internal/models"
 
 	"github.com/elastic/go-elasticsearch/v7"
 	"github.com/elastic/go-elasticsearch/v7/esapi"

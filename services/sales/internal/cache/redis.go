@@ -2,62 +2,115 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"time"
-	
 	"example.com/backstage/services/sales/config"
-	
+	"time"
+
 	"github.com/go-redis/redis/v8"
+	"github.com/google/uuid"
+	"github.com/pkg/errors"
 )
 
-// RedisClient is an interface for Redis operations
-type RedisClient interface {
-	Get(ctx context.Context, key string) (string, error)
-	Set(ctx context.Context, key, value string, expiration time.Duration) error
-	Delete(ctx context.Context, key string) error
-	Close() error
+// RedisCache provides caching using Redis
+type RedisCache struct {
+	client  *redis.Client
+	enabled bool
 }
 
-// redisClient implements the RedisClient interface
-type redisClient struct {
-	client *redis.Client
-}
+// NewRedisCache creates a new Redis cache
+func NewRedisCache(cfg config.RedisConfig) (*RedisCache, error) {
+	if !cfg.Enabled {
+		return &RedisCache{enabled: false}, nil
+	}
 
-// NewRedisClient creates a new Redis client
-func NewRedisClient(cfg config.RedisConfig) (RedisClient, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Password: cfg.Password,
 		DB:       cfg.DB,
 	})
-	
+
 	// Test the connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+
+	_, err := client.Ping(ctx).Result()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to connect to Redis")
 	}
-	
-	return &redisClient{client: client}, nil
+
+	return &RedisCache{
+		client:  client,
+		enabled: true,
+	}, nil
 }
 
-// Get retrieves a value from Redis
-func (r *redisClient) Get(ctx context.Context, key string) (string, error) {
-	return r.client.Get(ctx, key).Result()
+// Get retrieves a value from cache
+func (c *RedisCache) Get(ctx context.Context, key string, value interface{}) error {
+	if !c.enabled {
+		return errors.New("cache is disabled")
+	}
+
+	data, err := c.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if err == redis.Nil {
+			return errors.Wrap(err, "key not found in cache")
+		}
+		return errors.Wrap(err, "failed to get value from Redis")
+	}
+
+	err = json.Unmarshal(data, value)
+	if err != nil {
+		return errors.Wrap(err, "failed to unmarshal cached value")
+	}
+
+	return nil
 }
 
-// Set stores a value in Redis with expiration
-func (r *redisClient) Set(ctx context.Context, key, value string, expiration time.Duration) error {
-	return r.client.Set(ctx, key, value, expiration).Err()
+// Set stores a value in cache with optional expiration
+func (c *RedisCache) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
+	if !c.enabled {
+		return errors.New("cache is disabled")
+	}
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal value for caching")
+	}
+
+	err = c.client.Set(ctx, key, data, expiration).Err()
+	if err != nil {
+		return errors.Wrap(err, "failed to set value in Redis")
+	}
+
+	return nil
 }
 
-// Delete removes a key from Redis
-func (r *redisClient) Delete(ctx context.Context, key string) error {
-	return r.client.Del(ctx, key).Err()
+// GetMachineCacheKey generates a cache key for machine data
+func GetMachineCacheKey(id uuid.UUID) string {
+	return fmt.Sprintf("machine:%s", id.String())
+}
+
+// GetDeviceCacheKey generates a cache key for device data
+func GetDeviceCacheKey(mcu string) string {
+	return fmt.Sprintf("device:%s", mcu)
+}
+
+// GetRevisionCacheKey generates a cache key for machine revision data
+func GetRevisionCacheKey(id uuid.UUID) string {
+	return fmt.Sprintf("revision:%s", id.String())
+}
+
+// GetTenantCacheKey generates a cache key for tenant data
+func GetTenantCacheKey(id uuid.UUID) string {
+	return fmt.Sprintf("tenant:%s", id.String())
 }
 
 // Close closes the Redis connection
-func (r *redisClient) Close() error {
-	return r.client.Close()
+func (c *RedisCache) Close() error {
+	if !c.enabled || c.client == nil {
+		return nil
+	}
+	
+	return c.client.Close()
 }

@@ -4,15 +4,16 @@ import (
 	"context"
 	"os"
 	"os/signal"
-	"sales_service/config"
-	"sales_service/internal/api"
-	"sales_service/internal/cache"
-	"sales_service/internal/models"
-	"sales_service/internal/search"
-	"sales_service/internal/services"
-	"sales_service/internal/tracing"
+	"example.com/backstage/services/sales/config"
+	"example.com/backstage/services/sales/internal/api"
+	"example.com/backstage/services/sales/internal/cache"
+	"example.com/backstage/services/sales/internal/models"
+	"example.com/backstage/services/sales/internal/search"
+	"example.com/backstage/services/sales/internal/services"
+	"example.com/backstage/services/sales/internal/tracing"
 	"syscall"
 
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -48,8 +49,8 @@ func runAPI(cmd *cobra.Command, args []string) error {
 		os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// Initialize database connection
-	db, err := initDatabase(cfg)
+	// Initialize database connections
+	db, readOnlyDB, err := initDatabases(cfg)
 	if err != nil {
 		return err
 	}
@@ -73,7 +74,7 @@ func runAPI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize services
-	salesService := services.NewSalesService(db, redisCache, elasticClient, tracer)
+	salesService := services.NewSalesService(db, readOnlyDB, redisCache, elasticClient, tracer)
 
 	// Initialize and start the server
 	server := api.NewServer(cfg, salesService, tracer)
@@ -97,16 +98,23 @@ func runAPI(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func initDatabase(cfg config.Config) (*gorm.DB, error) {
+func initDatabases(cfg config.Config) (*gorm.DB, *gorm.DB, error) {
+	// Initialize write database
 	db, err := gorm.Open(postgres.Open(cfg.DB.DSN), &gorm.Config{})
 	if err != nil {
-		return nil, err
+		return nil, nil, errors.Wrap(err, "failed to connect to write database")
 	}
 
-	// Auto-migrate the database
+	// Initialize read-only database
+	readOnlyDB, err := gorm.Open(postgres.Open(cfg.DB.ReadOnlyDSN), &gorm.Config{})
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "failed to connect to read-only database")
+	}
+
+	// Auto-migrate only the write database
 	if err := models.SetupModels(db); err != nil {
-		return nil, err
+		return nil, nil, errors.Wrap(err, "failed to run migrations")
 	}
 
-	return db, nil
+	return db, readOnlyDB, nil
 }

@@ -1,7 +1,7 @@
 package tracing
 
 import (
-	"sales_service/config"
+	"example.com/backstage/services/sales/config"
 
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/pkg/errors"

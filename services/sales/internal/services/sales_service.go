@@ -2,15 +2,16 @@ package services
 
 import (
 	"context"
-	"sales_service/internal/cache"
-	"sales_service/internal/models"
-	"sales_service/internal/repositories"
-	"sales_service/internal/search"
-	"sales_service/internal/tracing"
+	"example.com/backstage/services/sales/internal/cache"
+	"example.com/backstage/services/sales/internal/models"
+	"example.com/backstage/services/sales/internal/repositories"
+	"example.com/backstage/services/sales/internal/search"
+	"example.com/backstage/services/sales/internal/tracing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/google/uuid"
+	"encoding/json"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -19,7 +20,8 @@ import (
 
 // SalesService handles sales-related business logic
 type SalesService struct {
-	db              *gorm.DB
+	db              *gorm.DB       // Write database
+	readOnlyDB      *gorm.DB       // Read-only database
 	deviceRepo      *repositories.DeviceRepository
 	dmrRepo         *repositories.DeviceMachineRevisionRepository
 	mrRepo          *repositories.MachineRevisionRepository
@@ -35,20 +37,22 @@ type SalesService struct {
 // NewSalesService creates a new sales service
 func NewSalesService(
 	db *gorm.DB,
+	readOnlyDB *gorm.DB,
 	cache *cache.RedisCache,
 	elasticClient *search.ElasticClient,
 	tracer tracing.Tracer,
 ) *SalesService {
-	deviceRepo := repositories.NewDeviceRepository(db)
-	dmrRepo := repositories.NewDeviceMachineRevisionRepository(db)
-	mrRepo := repositories.NewMachineRevisionRepository(db)
-	machineRepo := repositories.NewMachineRepository(db)
-	tenantRepo := repositories.NewTenantRepository(db)
-	dsRepo := repositories.NewDispenseSessionRepository(db)
-	saleRepo := repositories.NewSaleRepository(db)
+	deviceRepo := repositories.NewDeviceRepository(db, readOnlyDB)
+	dmrRepo := repositories.NewDeviceMachineRevisionRepository(db, readOnlyDB)
+	mrRepo := repositories.NewMachineRevisionRepository(db, readOnlyDB)
+	machineRepo := repositories.NewMachineRepository(db, readOnlyDB)
+	tenantRepo := repositories.NewTenantRepository(db, readOnlyDB)
+	dsRepo := repositories.NewDispenseSessionRepository(db, readOnlyDB)
+	saleRepo := repositories.NewSaleRepository(db, readOnlyDB)
 
 	return &SalesService{
 		db:              db,
+		readOnlyDB:      readOnlyDB,
 		deviceRepo:      deviceRepo,
 		dmrRepo:         dmrRepo,
 		mrRepo:          mrRepo,
