@@ -103,7 +103,7 @@ func (h *SalesHandler) HandleIncomingSalePayload(c *gin.Context) {
 		payload.EventType = "dispense"
 	}
 
-	// Create dispense session
+	// Create dispense session (which now handles sale creation internally)
 	dispenseSession, err := h.salesService.CreateDispenseSession(c, payload)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create dispense session")
@@ -118,9 +118,16 @@ func (h *SalesHandler) HandleIncomingSalePayload(c *gin.Context) {
 		timestamp = time.Now().Format(time.RFC3339)
 	}
 
+	// Check if the session was marked as processed 
+	// If so, we can indicate that the sale was created as well
+	message := "Sale payload received"
+	if dispenseSession.IsProcessed {
+		message = "Sale payload received and processed"
+	}
+
 	response := SalePayloadResponse{
 		Success:           true,
-		Message:           "Sale payload received",
+		Message:           message,
 		Timestamp:         timestamp,
 		DispenseSessionID: dispenseSession.ID,
 	}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"example.com/backstage/services/sales/internal/cache"
 	"example.com/backstage/services/sales/internal/models"
 	"example.com/backstage/services/sales/internal/repositories"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/google/uuid"
-	"encoding/json"
 	"github.com/newrelic/go-agent/v3/newrelic"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -66,8 +66,14 @@ func NewSalesService(
 	}
 }
 
-// CreateDispenseSession creates a new dispense session
+// CreateDispenseSession creates a new dispense session and immediately processes it to create a sale
 func (s *SalesService) CreateDispenseSession(ctx context.Context, payload *models.SalePayload) (*models.DispenseSession, error) {
+	// Create span for session creation
+	txn := s.tracer.StartTransaction("create-dispense-session")
+	defer s.tracer.EndTransaction(txn)
+	
+	span := s.tracer.StartSpan("create-dispense-session", txn)
+	
 	session := &models.DispenseSession{
 		ID:                           uuid.New(),
 		IdempotencyKey:               payload.IdempotencyKey,
@@ -82,15 +88,156 @@ func (s *SalesService) CreateDispenseSession(ctx context.Context, payload *model
 		IsProcessed:                  false,
 		Time:                         &payload.Time,
 		DeviceMcu:                    &payload.Device,
+		CreatedAt:                    time.Now(),
+		UpdatedAt:                    time.Now(),
 	}
 
 	err := s.dsRepo.Create(ctx, session)
+	span.End()
+	
 	if err != nil {
+		s.tracer.RecordError(txn, err)
 		return nil, errors.Wrap(err, "failed to create dispense session")
 	}
 
-	log.Info().Str("id", session.ID.String()).Msg("Dispense session created")
+	log.Info().
+		Str("session_id", session.ID.String()).
+		Str("device", *session.DeviceMcu).
+		Int32("amount", session.AmountKsh).
+		Msg("Dispense session created successfully")
+
+	// Try to process the session immediately
+	processSpan := s.tracer.StartSpan("immediate-sale-processing", txn)
+	err = s.ProcessDispenseSessionImmediately(ctx, session, payload)
+	processSpan.End()
+	
+	if err != nil {
+		// Log the error but don't fail the dispense session creation
+		log.Warn().
+			Err(err).
+			Str("session_id", session.ID.String()).
+			Msg("Failed to process dispense session immediately, scheduler will retry")
+		
+		s.tracer.RecordError(txn, err)
+	}
+
 	return session, nil
+}
+
+// ProcessDispenseSessionImmediately processes a dispense session immediately after creation
+func (s *SalesService) ProcessDispenseSessionImmediately(ctx context.Context, session *models.DispenseSession, payload *models.SalePayload) error {
+	// Skip processing if we don't have the required data
+	if session.DeviceMcu == nil || session.Time == nil {
+		return errors.New("missing required data (device or time) for immediate processing")
+	}
+
+	// Convert Unix timestamp to time.Time
+	saleTime := time.Unix(int64(*session.Time), 0)
+
+	// Start span for retrieving context data
+	contextSpan := s.tracer.StartTransaction("retrieve-sale-context")
+	defer s.tracer.EndTransaction(contextSpan)
+
+	// Retrieve sale details from read-only DB
+	details, err := s.saleRepo.RetrieveSaleDetails(
+		ctx,
+		s.deviceRepo,
+		s.dmrRepo,
+		s.mrRepo,
+		s.machineRepo,
+		s.tenantRepo,
+		*session.DeviceMcu,
+		saleTime,
+	)
+	
+	if err != nil {
+		s.tracer.RecordError(contextSpan, err)
+		return errors.Wrap(err, "failed to retrieve sale details")
+	}
+
+	// Determine sale type
+	saleType := s.GetSaleType(session.AmountKsh)
+
+	// Start a transaction for sale creation and indexing
+	processTxn := s.tracer.StartTransaction("create-and-index-sale")
+	defer s.tracer.EndTransaction(processTxn)
+
+	// Execute in a database transaction
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Create the sale
+		sale := &models.Sale{
+			ID:               uuid.New(),
+			MachineRevisionID: details.MachineRevision.ID,
+			MachineID:        details.Machine.ID,
+			TenantID:         details.Tenant.ID,
+			Type:             saleType,
+			Quantity:         1,
+			Amount:           &session.AmountKsh,
+			Position:         0, // Default position
+			IsReconciled:     true,
+			IsValid:          true,
+			Time:             &saleTime,
+			DispenseSessionID: session.ID,
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
+		}
+
+		// Insert the sale
+		createSpan := s.tracer.StartSpan("create-sale", processTxn)
+		if err := tx.Create(sale).Error; err != nil {
+			createSpan.End()
+			s.tracer.RecordError(processTxn, err)
+			return errors.Wrap(err, "failed to create sale")
+		}
+		createSpan.End()
+
+		// Get the machine's location
+		locationSpan := s.tracer.StartSpan("get-machine-location", processTxn)
+		location, err := s.machineRepo.GetAddress(ctx, details.Machine.ID)
+		locationSpan.End()
+		
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Str("machine_id", details.Machine.ID.String()).
+				Msg("Failed to get machine location")
+			location = ""
+		}
+
+		// Index the sale in Elasticsearch
+		indexSpan := s.tracer.StartSpan("index-sale", processTxn)
+		err = s.elasticClient.IndexSale(ctx, sale, details.Machine, location)
+		indexSpan.End()
+		
+		if err != nil {
+			s.tracer.RecordError(processTxn, err)
+			return errors.Wrap(err, "failed to index sale in Elasticsearch")
+		}
+
+		// Mark the dispense session as processed
+		markSpan := s.tracer.StartSpan("mark-session-processed", processTxn)
+		if err := s.dsRepo.MarkAsProcessed(ctx, session.ID); err != nil {
+			markSpan.End()
+			s.tracer.RecordError(processTxn, err)
+			return errors.Wrap(err, "failed to mark dispense session as processed")
+		}
+		markSpan.End()
+
+		log.Info().
+			Str("session_id", session.ID.String()).
+			Str("sale_id", sale.ID.String()).
+			Str("device", *session.DeviceMcu).
+			Msg("Sale created and indexed successfully")
+
+		return nil
+	})
+
+	if err != nil {
+		s.tracer.RecordError(processTxn, err)
+		return errors.Wrap(err, "transaction failed when processing dispense session")
+	}
+
+	return nil
 }
 
 // GetSaleType determines the sale type based on parameters
@@ -125,7 +272,7 @@ func (s *SalesService) ProcessDispenseMessage(ctx context.Context, message *azse
 		Str("session_id", session.ID.String()).
 		Str("device", *session.DeviceMcu).
 		Int32("amount", session.AmountKsh).
-		Msg("Dispense session created successfully")
+		Msg("Message processed successfully")
 
 	return nil
 }
@@ -160,7 +307,7 @@ func ExtractDispenseDetails(message *azservicebus.ReceivedMessage) (*models.Sale
 	return &payload, nil
 }
 
-// ReconcileSales processes unprocessed dispense sessions and creates sales records
+// ReconcileSales processes unprocessed dispense sessions as a fallback mechanism
 func (s *SalesService) ReconcileSales(ctx context.Context) error {
 	// Start transaction
 	txn := s.tracer.StartTransaction("reconcile-sales")
@@ -176,7 +323,11 @@ func (s *SalesService) ReconcileSales(ctx context.Context) error {
 		return errors.Wrap(err, "failed to get unprocessed dispense sessions")
 	}
 
-	log.Info().Msgf("Found %d unprocessed dispense sessions", len(sessions))
+	log.Info().Msgf("Found %d unprocessed dispense sessions for reconciliation", len(sessions))
+
+	if len(sessions) == 0 {
+		return nil // Nothing to process
+	}
 
 	// Process each session
 	for _, session := range sessions {
@@ -184,118 +335,30 @@ func (s *SalesService) ReconcileSales(ctx context.Context) error {
 		if session.DeviceMcu == nil || session.Time == nil {
 			log.Warn().
 				Str("session_id", session.ID.String()).
-				Msg("Skipping session with missing data")
+				Msg("Skipping session with missing data during reconciliation")
 			continue
 		}
 
-		// Convert Unix timestamp to time.Time
-		saleTime := time.Unix(int64(*session.Time), 0)
+		// Process this session (reusing the same logic as immediate processing)
+		// But construct a dummy payload with the minimal required data
+		payload := &models.SalePayload{
+			Device: *session.DeviceMcu,
+			Time:   *session.Time,
+		}
 
-		// Get sale details
-		span := s.tracer.StartSpan("retrieve-sale-details", txn)
-		details, err := s.saleRepo.RetrieveSaleDetails(
-			ctx,
-			s.deviceRepo,
-			s.dmrRepo,
-			s.mrRepo,
-			s.machineRepo,
-			s.tenantRepo,
-			*session.DeviceMcu,
-			saleTime,
-		)
-		span.End()
-
+		err := s.ProcessDispenseSessionImmediately(ctx, &session, payload)
 		if err != nil {
 			log.Error().
 				Err(err).
 				Str("session_id", session.ID.String()).
-				Str("device", *session.DeviceMcu).
-				Msg("Failed to retrieve sale details")
-			continue
-		}
-
-		// Determine sale type
-		saleType := s.GetSaleType(session.AmountKsh)
-
-		// Create sale in a transaction
-		err = s.db.Transaction(func(tx *gorm.DB) error {
-			// Create the sale
-			sale := &models.Sale{
-				ID:               uuid.New(),
-				MachineRevisionID: details.MachineRevision.ID,
-				MachineID:        details.Machine.ID,
-				TenantID:         details.Tenant.ID,
-				Type:             saleType,
-				Quantity:         1,
-				Amount:           &session.AmountKsh,
-				Position:         0, // Default position
-				IsReconciled:     true,
-				IsValid:          true,
-				Time:             &saleTime,
-				DispenseSessionID: session.ID,
-				// Set timestamps
-				CreatedAt:        time.Now(),
-				UpdatedAt:        time.Now(),
-			}
-
-			// Insert the sale
-			createSpan := s.tracer.StartSpan("create-sale", txn)
-			if err := tx.Create(sale).Error; err != nil {
-				createSpan.End()
-				return errors.Wrap(err, "failed to create sale")
-			}
-			createSpan.End()
-
-			// Get the machine's location
-			locationSpan := s.tracer.StartSpan("get-machine-location", txn)
-			location, err := s.machineRepo.GetAddress(ctx, details.Machine.ID)
-			locationSpan.End()
-			
-			if err != nil {
-				log.Warn().
-					Err(err).
-					Str("machine_id", details.Machine.ID.String()).
-					Msg("Failed to get machine location")
-				location = ""
-			}
-
-			// Index the sale in Elasticsearch
-			indexSpan := s.tracer.StartSpan("index-sale", txn)
-			err = s.elasticClient.IndexSale(ctx, sale, details.Machine, location)
-			indexSpan.End()
-			
-			if err != nil {
-				log.Error().
-					Err(err).
-					Str("sale_id", sale.ID.String()).
-					Msg("Failed to index sale in Elasticsearch")
-				// Continue despite indexing error
-			}
-
-			// Mark the dispense session as processed
-			markSpan := s.tracer.StartSpan("mark-session-processed", txn)
-			if err := s.dsRepo.MarkAsProcessed(ctx, session.ID); err != nil {
-				markSpan.End()
-				return errors.Wrap(err, "failed to mark dispense session as processed")
-			}
-			markSpan.End()
-
-			return nil
-		})
-
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("session_id", session.ID.String()).
-				Msg("Failed to process dispense session")
+				Msg("Failed to process dispense session during reconciliation")
 			s.tracer.RecordError(txn, err)
-			continue
+			// Continue to next session
+		} else {
+			log.Info().
+				Str("session_id", session.ID.String()).
+				Msg("Successfully processed dispense session during reconciliation")
 		}
-
-		log.Info().
-			Str("session_id", session.ID.String()).
-			Str("device", *session.DeviceMcu).
-			Msg("Successfully processed dispense session")
 	}
 
 	return nil

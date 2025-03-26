@@ -94,9 +94,9 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return azureBus.ProcessMessages(ctx, salesService.ProcessDispenseMessage)
 	})
 
-	// Start the sales reconciliation cron job
+	// Start the sales reconciliation cron job as a fallback mechanism
 	g.Go(func() error {
-		log.Info().Msg("Starting sales reconciliation cron job")
+		log.Info().Msg("Starting sales reconciliation cron job as fallback mechanism")
 		
 		// Create a scheduler
 		scheduler, err := gocron.NewScheduler()
@@ -104,12 +104,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		
-		// Add the reconciliation job to run every minute
+		// Add the reconciliation job to run every 5 minutes
+		// This is less frequent since it's just a fallback mechanism now
 		_, err = scheduler.NewJob(
-			gocron.DurationJob(1*time.Minute),
+			gocron.DurationJob(5*time.Minute),
 			gocron.NewTask(func() {
+				log.Info().Msg("Running fallback reconciliation job to catch any missed sessions")
 				if err := salesService.ReconcileSales(ctx); err != nil {
-					log.Error().Err(err).Msg("Failed to reconcile sales")
+					log.Error().Err(err).Msg("Failed to reconcile sales in fallback job")
 				}
 			}),
 		)
