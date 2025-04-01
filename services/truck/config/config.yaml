@@ -1,0 +1,38 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+  readTimeout: "1m"
+  writeTimeout: "1m"
+  shutdownTimeout: "10s"
+  corsWhiteList:
+    - "*"
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "root"
+  password: "password"
+  name: "operations_db"
+  sslMode: "disable"
+  debug: false
+  maxConn: 100
+  maxIdle: 10
+  maxLife: "5m"
+
+messageBus:
+  connectionString: ""
+  prefix: "dev"
+  queues:
+    - "erp-operations"
+  erpQueue: "erp-messages-operations"
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  enabled: true
+
+logging:
+  level: "info"
+  json: false

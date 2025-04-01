@@ -1,29 +1,39 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.20-alpine AS builder
 
 WORKDIR /app
 
-# Copy pkg and current service only
-COPY pkg/ ./pkg/
-COPY services/truck/ ./services/truck/
+# Install dependencies
+RUN apk add --no-cache git
 
-# Build the service
-WORKDIR /app/services/truck
+# Copy and download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Add a temporary module replacement that points to the correct path
-RUN go mod edit -replace=example.com/backstage/pkg=/app/pkg && \
-    go mod tidy && \
-    go build -o service .
+# Copy the source code
+COPY . .
 
-FROM alpine:latest
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/operations-service
+
+# Final stage
+FROM alpine:3.17
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install CA certificates
+RUN apk --no-cache add ca-certificates tzdata
 
-COPY --from=builder /app/services/truck/service .
+# Copy the binary from builder
+COPY --from=builder /app/operations-service /app/operations-service
+COPY --from=builder /app/config /app/config
 
-# Expose service port
-EXPOSE 8096
+# Create a non-root user and group
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
 
-CMD ["./service"]
+# Expose port
+EXPOSE 8000
+
+# Set entry point
+ENTRYPOINT ["/app/operations-service"]
+CMD ["serve"]

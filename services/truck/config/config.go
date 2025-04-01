@@ -1,126 +1,136 @@
 package config
 
 import (
-	"os"
-	"strconv"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/spf13/viper"
 )
 
-// Config holds the service configuration
+// Config holds all configuration for the service
 type Config struct {
-	Server        ServerConfig
-	Database      DatabaseConfig
-	Redis         RedisConfig
-	ServiceBus    ServiceBusConfig
-	NewRelic      NewRelicConfig
-	Elasticsearch ElasticsearchConfig
+	Server     ServerConfig
+	Database   DatabaseConfig
+	MessageBus MessageBusConfig
+	Redis      RedisConfig
+	Logging    LoggingConfig
 }
 
-// ServerConfig holds the HTTP server configuration
+// ServerConfig holds http server configuration
 type ServerConfig struct {
-	Port int
-	Mode string // debug, release, test
+	Host            string
+	Port            int
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
+	ShutdownTimeout time.Duration
+	CorsWhiteList   []string
 }
 
-// DatabaseConfig holds the database configuration
+// DatabaseConfig holds database configuration
 type DatabaseConfig struct {
 	Host     string
 	Port     int
 	User     string
 	Password string
-	DBName   string
+	Name     string
 	SSLMode  string
+	Debug    bool
+	MaxConn  int
+	MaxIdle  int
+	MaxLife  time.Duration
 }
 
-// RedisConfig holds the Redis configuration
+// MessageBusConfig holds message bus configuration
+type MessageBusConfig struct {
+	ConnectionString string
+	Prefix           string
+	Queues           []string
+	ERPQueue         string
+}
+
+// RedisConfig holds Redis configuration
 type RedisConfig struct {
 	Host     string
 	Port     int
 	Password string
 	DB       int
+	Enabled  bool
 }
 
-// ServiceBusConfig holds the Azure Service Bus configuration
-type ServiceBusConfig struct {
-	ConnectionString string
-	QueueName        string
+// LoggingConfig holds logging configuration
+type LoggingConfig struct {
+	Level string
+	JSON  bool
 }
 
-// NewRelicConfig holds the New Relic configuration
-type NewRelicConfig struct {
-	AppName    string
-	LicenseKey string
-	Enabled    bool
-}
-
-// ElasticsearchConfig holds the Elasticsearch configuration
-type ElasticsearchConfig struct {
-	URLs     []string
-	Username string
-	Password string
-	Index    string
-}
-
-// Load loads the configuration from environment variables
+// Load loads configuration from file and environment variables
 func Load() (*Config, error) {
-	// Server
-	port, _ := strconv.Atoi(getEnv("PORT", "8095"))
-	mode := getEnv("GIN_MODE", "debug")
+	v := viper.New()
+
+	// Set default values
+	setDefaults(v)
+
+	// Read from config file
+	v.SetConfigName("config")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("./config")
 	
-	// Database
-	dbPort, _ := strconv.Atoi(getEnv("DB_PORT", "5432"))
-	
-	// Redis
-	redisPort, _ := strconv.Atoi(getEnv("REDIS_PORT", "6379"))
-	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
-	
-	// New Relic
-	nrEnabled, _ := strconv.ParseBool(getEnv("NEW_RELIC_ENABLED", "true"))
-	
-	// Elasticsearch
-	esURLs := []string{getEnv("ES_URL", "http://localhost:9200")}
-	
-	return &Config{
-		Server: ServerConfig{
-			Port: port,
-			Mode: mode,
-		},
-		Database: DatabaseConfig{
-			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     dbPort,
-			User:     getEnv("DB_USER", "postgres"),
-			Password: getEnv("DB_PASSWORD", "postgres"),
-			DBName:   getEnv("DB_NAME", "truck_db"),
-			SSLMode:  getEnv("DB_SSL_MODE", "disable"),
-		},
-		Redis: RedisConfig{
-			Host:     getEnv("REDIS_HOST", "localhost"),
-			Port:     redisPort,
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       redisDB,
-		},
-		ServiceBus: ServiceBusConfig{
-			ConnectionString: getEnv("SERVICEBUS_CONNECTION_STRING", ""),
-			QueueName:        getEnv("SERVICEBUS_QUEUE_NAME", "truck-queue"),
-		},
-		NewRelic: NewRelicConfig{
-			AppName:    getEnv("NEW_RELIC_APP_NAME", "Truck Aggregator"),
-			LicenseKey: getEnv("NEW_RELIC_LICENSE_KEY", ""),
-			Enabled:    nrEnabled,
-		},
-		Elasticsearch: ElasticsearchConfig{
-			URLs:     esURLs,
-			Username: getEnv("ES_USERNAME", ""),
-			Password: getEnv("ES_PASSWORD", ""),
-			Index:    getEnv("ES_INDEX", "truck-index"),
-		},
-	}, nil
+	// Override with environment variables
+	v.SetEnvPrefix("OPS")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	if err := v.ReadInConfig(); err != nil {
+		// It's okay if config file doesn't exist
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, fmt.Errorf("error reading config file: %w", err)
+		}
+	}
+
+	var config Config
+	if err := v.Unmarshal(&config); err != nil {
+		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	return &config, nil
 }
 
-// getEnv gets an environment variable or returns a default value
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
+// setDefaults sets default values for configuration
+func setDefaults(v *viper.Viper) {
+	// Server defaults
+	v.SetDefault("server.host", "localhost")
+	v.SetDefault("server.port", 8000)
+	v.SetDefault("server.readTimeout", "1m")
+	v.SetDefault("server.writeTimeout", "1m")
+	v.SetDefault("server.shutdownTimeout", "10s")
+	v.SetDefault("server.corsWhiteList", []string{"*"})
+
+	// Database defaults
+	v.SetDefault("database.host", "localhost")
+	v.SetDefault("database.port", 5432)
+	v.SetDefault("database.user", "root")
+	v.SetDefault("database.password", "password")
+	v.SetDefault("database.name", "operations_db")
+	v.SetDefault("database.sslMode", "disable")
+	v.SetDefault("database.debug", false)
+	v.SetDefault("database.maxConn", 100)
+	v.SetDefault("database.maxIdle", 10)
+	v.SetDefault("database.maxLife", "5m")
+
+	// MessageBus defaults
+	v.SetDefault("messageBus.prefix", "dev")
+	v.SetDefault("messageBus.erpQueue", "erp-messages-operations")
+
+	// Redis defaults
+	v.SetDefault("redis.host", "localhost")
+	v.SetDefault("redis.port", 6379)
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("redis.enabled", false)
+
+	// Logging defaults
+	v.SetDefault("logging.level", "info")
+	v.SetDefault("logging.json", false)
 }
