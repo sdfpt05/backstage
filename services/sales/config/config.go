@@ -13,6 +13,7 @@ type Config struct {
 	Elastic           ElasticConfig
 	Tracing           TracingConfig
 	HTTPServerAddress string `mapstructure:"HTTP_SERVER_ADDRESS"`
+	MetricsEnabled    bool   `mapstructure:"METRICS_ENABLED"`
 }
 
 // DatabaseConfig holds database configuration
@@ -62,6 +63,9 @@ func LoadConfig(path string) (config Config, err error) {
 	viper.SetConfigType("env")
 
 	viper.AutomaticEnv()
+	
+	// Set default values
+	viper.SetDefault("METRICS_ENABLED", true)
 
 	err = viper.ReadInConfig()
 	if err != nil {

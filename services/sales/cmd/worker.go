@@ -7,7 +7,9 @@ import (
 	"example.com/backstage/services/sales/config"
 	"example.com/backstage/services/sales/internal/cache"
 	"example.com/backstage/services/sales/internal/messaging"
+	"example.com/backstage/services/sales/internal/metrics"
 	"example.com/backstage/services/sales/internal/models"
+	// "example.com/backstage/services/sales/internal/repositories"
 	"example.com/backstage/services/sales/internal/search"
 	"example.com/backstage/services/sales/internal/services"
 	"example.com/backstage/services/sales/internal/tracing"
@@ -79,8 +81,11 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		log.Warn().Err(err).Msg("Failed to initialize Elasticsearch client, continuing without search functionality")
 	}
 
+	// Initialize metrics
+	metricsCollector := metrics.NewMetrics()
+
 	// Initialize services
-	salesService := services.NewSalesService(db, readOnlyDB, redisCache, elasticClient, tracer)
+	salesService := services.NewSalesService(db, readOnlyDB, redisCache, elasticClient, metricsCollector, tracer)
 
 	// Initialize Azure Service Bus client
 	azureBus, err := messaging.NewAzureServiceBus(cfg.Azure, tracer)

@@ -114,6 +114,7 @@ var serveCmd = &cobra.Command{
 		router.Use(middleware.Logger)
 		router.Use(middleware.Recover)
 		router.Use(middleware.CORS(cfg.Server.CorsWhiteList))
+		router.Use(api.MetricsMiddleware)
 
 		// Register routes
 		handler.RegisterRoutes(router.PathPrefix("/api/v1").Subrouter())

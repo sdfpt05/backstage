@@ -54,6 +54,10 @@ func Connect(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	sqlDB.SetMaxOpenConns(cfg.MaxConn)
 	sqlDB.SetMaxIdleConns(cfg.MaxIdle)
 	sqlDB.SetConnMaxLifetime(cfg.MaxLife)
+	
+	// Register hooks for metrics
+	RegisterDurationHooks(db)
+	RegisterMetricsHooks(db)
 
 	return db, nil
 }

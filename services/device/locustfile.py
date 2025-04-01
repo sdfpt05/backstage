@@ -1,6 +1,6 @@
 """
 Locust file for load testing device message endpoint.
-Simulates 1000 devices sending messages every 10 seconds.
+Simulates 1000 devices sending messages every 1 second.
 """
 import json
 import random
@@ -9,8 +9,7 @@ from locust import HttpUser, task, between
 from datetime import datetime
 
 class DeviceUser(HttpUser):
-    # Wait between 8-12 seconds between tasks
-    # This creates an average of 10 seconds with some natural variation
+
     wait_time = between(0.1, 0.2)
     
     def on_start(self):
@@ -34,12 +33,12 @@ class DeviceUser(HttpUser):
             self.environment.runner.quit()
     
     def generate_message(self):
-        """Generate a realistic device message"""
-        # Generate random but realistic values
-        ram_usage = random.randint(20, 95)  # RAM usage in MB
-        milliseconds = random.randint(1000000, 9999999)  # Processing time
-        seconds_up = random.randint(1, 86400)  # Seconds up (up to 24 hours)
-        memory_map = random.randint(10000, 99999)  # Memory map address
+        """Generate a test device message"""
+
+        ram_usage = random.randint(20, 95) 
+        milliseconds = random.randint(1000000, 9999999)  
+        seconds_up = random.randint(1, 86400)  
+        memory_map = random.randint(10000, 99999)  
         
         # Create a message similar to the sample provided
         message = {
@@ -50,7 +49,6 @@ class DeviceUser(HttpUser):
             "mm": memory_map
         }
         
-        # Add timestamp and other fields occasionally
         if random.random() < 0.3:
             message["ts"] = int(time.time())
         
@@ -64,23 +62,20 @@ class DeviceUser(HttpUser):
         """Send a device message to the API"""
         message = self.generate_message()
         
-        # Prepare the payload
+
         payload = {
             "device_uid": self.device_uid,
             "message": json.dumps(message),
             "sent_via": "locust-test"
         }
         
-        # Record current time (for logging purposes)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Send the message to the API
         with self.client.post(
             "/api/v1/devices/messages",
             json=payload,
             catch_response=True
         ) as response:
-            # Validate the response
             if response.status_code == 200:
                 response.success()
             else:

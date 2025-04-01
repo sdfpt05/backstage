@@ -7,6 +7,8 @@ import (
 	"example.com/backstage/services/sales/internal/api/handlers"
 	"example.com/backstage/services/sales/internal/services"
 	"example.com/backstage/services/sales/internal/tracing"
+	"example.com/backstage/services/sales/internal/metrics"
+
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,14 +22,16 @@ type Server struct {
 	router       *gin.Engine
 	httpServer   *http.Server
 	salesService *services.SalesService
+	metrics      *metrics.Metrics
 	tracer       tracing.Tracer
 }
 
 // NewServer creates a new HTTP server
-func NewServer(cfg config.Config, salesService *services.SalesService, tracer tracing.Tracer) *Server {
+func NewServer(cfg config.Config, salesService *services.SalesService, metrics *metrics.Metrics, tracer tracing.Tracer) *Server {
 	server := &Server{
 		config:       cfg,
 		salesService: salesService,
+		metrics:      metrics,
 		tracer:       tracer,
 	}
 
@@ -54,10 +58,11 @@ func (s *Server) setupRouter() *gin.Engine {
 	salesHandler := handlers.NewSalesHandler(s.salesService, s.tracer)
 	salesHandler.RegisterRoutes(router)
 
-	// Health check endpoint
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	// Register metrics handler if enabled
+	if s.config.MetricsEnabled {
+		metricsHandler := handlers.NewMetricsHandler(s.metrics, s.tracer)
+		metricsHandler.RegisterRoutes(router)
+	}
 
 	return router
 }

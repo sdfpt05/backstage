@@ -10,6 +10,7 @@ import (
 
 	"example.com/backstage/services/truck/internal/cache"
 	"example.com/backstage/services/truck/internal/messagebus"
+	"example.com/backstage/services/truck/internal/metrics"
 	"example.com/backstage/services/truck/internal/model"
 	"example.com/backstage/services/truck/internal/repository"
 )
@@ -157,9 +158,15 @@ func (s *operationService) Create(ctx context.Context, req *CreateOperationReque
 
 // Update updates an operation
 func (s *operationService) Update(ctx context.Context, operation *model.Operation) (*model.Operation, error) {
+	// Record metrics
+	startTime := time.Now()
+	collector := metrics.GetMetricsCollector()
+	
 	// Update in database
 	operation, err := s.repo.Update(ctx, operation)
 	if err != nil {
+		collector.RecordOperation(metrics.OperationTypeFailed, time.Since(startTime))
+		collector.RecordError(metrics.ErrorTypeDatabase)
 		return nil, err
 	}
 
@@ -176,6 +183,13 @@ func (s *operationService) Update(ctx context.Context, operation *model.Operatio
 			logrus.WithError(err).Warn("Failed to update active operation in cache")
 		}
 	}
+	
+	// Record successful update metrics
+	collector.RecordOperation(metrics.OperationTypeUpdate, time.Since(startTime))
+	
+	// Update active operations gauge (if status changed)
+	count, _ := s.countActiveOperations(ctx)
+	collector.SetActiveOperations(count)
 
 	return operation, nil
 }
@@ -197,6 +211,13 @@ func (s *operationService) Cancel(ctx context.Context, req *CancelOperationReque
 
 // FindActiveByDeviceMCU finds an active operation by device MCU
 func (s *operationService) FindActiveByDeviceMCU(ctx context.Context, mcu string) (*model.Operation, error) {
+	// Record metrics
+	startTime := time.Now()
+	collector := metrics.GetMetricsCollector()
+	defer func() {
+		collector.RecordOperation(metrics.OperationTypeCreate, time.Since(startTime))
+	}()
+	
 	// Try to get from cache first
 	operation, err := s.cache.GetActiveOperationByDeviceMCU(ctx, mcu)
 	if err == nil {
@@ -227,6 +248,10 @@ func (s *operationService) FindActiveByDeviceMCU(ctx context.Context, mcu string
 		// Log the error but continue
 		logrus.WithError(err).Warn("Failed to cache active operation")
 	}
+	
+	// Update active operations gauge
+	count, _ := s.countActiveOperations(ctx)
+	collector.SetActiveOperations(count)
 
 	return operation, nil
 }
@@ -284,36 +309,74 @@ func (s *operationService) CreateUpdateOperationSession(ctx context.Context, ses
 
 // PublishOperationSessionToERP publishes an operation session to the ERP
 func (s *operationService) PublishOperationSessionToERP(ctx context.Context, session *model.OperationSession) error {
+	// Record metrics
+	startTime := time.Now()
+	collector := metrics.GetMetricsCollector()
+	
 	// Make sure we have all the needed information
 	if session.Operation == nil {
 		// Load the operation if not provided
 		operation, err := s.repo.GetByID(ctx, session.OperationID)
 		if err != nil {
+			collector.RecordError(metrics.ErrorTypeDatabase)
 			return err
 		}
 		session.Operation = operation
 	}
 
 	// Publish the message with retry
-	return messagebus.RetryWithBackoff(ctx, func() error {
+	err := messagebus.RetryWithBackoff(ctx, func() error {
 		return s.messageBus.PublishMessage(ctx, session, s.erpQueue)
 	}, 3)
+	
+	// Record metrics
+	if err != nil {
+		collector.RecordOperation(metrics.OperationTypeFailed, time.Since(startTime))
+	} else {
+		collector.RecordOperation(metrics.OperationTypeComplete, time.Since(startTime))
+	}
+	
+	return err
+}
+
+// countActiveOperations counts active operations
+func (s *operationService) countActiveOperations(ctx context.Context) (int, error) {
+
+	// For simplicity, we'll just count operations that aren't completed, cancelled, or errored
+	filter := model.Operation{}
+	operations, err := s.repo.FindAllActiveBy(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	
+	return len(operations), nil
 }
 
 // RepublishEvents republishes operation sessions within a time range and matching a filter
 func (s *operationService) RepublishEvents(ctx context.Context, start, end time.Time, filter model.OperationSession) (int, error) {
+	// Record metrics
+	startTime := time.Now()
+	collector := metrics.GetMetricsCollector()
+	
 	// Find matching operation sessions
 	sessions, err := s.repo.FindOperationSessionsBy(ctx, filter, &start, &end)
 	if err != nil {
+		collector.RecordError(metrics.ErrorTypeDatabase)
 		return 0, err
 	}
 
 	// Publish each session to ERP
+	successCount := 0
 	for _, session := range sessions {
 		if err := s.PublishOperationSessionToERP(ctx, session); err != nil {
 			logrus.WithError(err).Errorf("Failed to republish operation session %s", session.UUID)
+		} else {
+			successCount++
 		}
 	}
-
+	
+	// Record metrics
+	collector.RecordOperation(metrics.OperationTypeEventProcessing, time.Since(startTime))
+	
 	return len(sessions), nil
 }
