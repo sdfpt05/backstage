@@ -10,6 +10,7 @@ import (
 	"time"
 	
 	"example.com/backstage/services/device/internal/cache"
+	"example.com/backstage/services/device/internal/database"
 	"example.com/backstage/services/device/internal/messaging"
 	"example.com/backstage/services/device/internal/models"
 	"example.com/backstage/services/device/internal/repository"
@@ -20,7 +21,7 @@ import (
 
 // Service defines the business logic operations
 type Service interface {
-	// Existing Device operations
+	// Device operations
 	RegisterDevice(ctx context.Context, device *models.Device) error
 	GetDevice(ctx context.Context, id uint) (*models.Device, error)
 	GetDeviceByUID(ctx context.Context, uid string) (*models.Device, error)
@@ -28,28 +29,28 @@ type Service interface {
 	UpdateDeviceStatus(ctx context.Context, id uint, active bool) error
 	AssignFirmwareToDevice(ctx context.Context, deviceID, releaseID uint) error
 	
-	// Existing DeviceMessage operations
+	// DeviceMessage operations
 	ProcessDeviceMessage(ctx context.Context, message *models.DeviceMessage) error
 	GetDeviceMessages(ctx context.Context, deviceID uint, limit int) ([]*models.DeviceMessage, error)
 	
-	// Existing Organization operations
+	// Organization operations
 	CreateOrganization(ctx context.Context, org *models.Organization) error
 	UpdateOrganization(ctx context.Context, org *models.Organization) error
 	GetOrganization(ctx context.Context, id uint) (*models.Organization, error)
 	ListOrganizations(ctx context.Context) ([]*models.Organization, error)
 	
-	// Existing FirmwareRelease operations
+	// FirmwareRelease operations
 	CreateFirmwareRelease(ctx context.Context, release *models.FirmwareRelease) error
 	GetFirmwareRelease(ctx context.Context, id uint) (*models.FirmwareRelease, error)
 	ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareRelease, error)
 	ActivateFirmwareRelease(ctx context.Context, id uint) error
 	
-	// Existing Enhanced operations for batch processing and monitoring
+	// Enhanced operations for batch processing and monitoring
 	BatchProcessMessages(ctx context.Context, messages []*models.DeviceMessage) error
 	GetProcessorStats() map[string]interface{}
 	Shutdown() error
 
-	// NEW: OTA Update API methods
+	// OTA Update API methods
 	CreateUpdateSession(ctx context.Context, deviceID, firmwareID uint, priority uint, forceUpdate, allowRollback bool) (*models.OTAUpdateSession, error)
 	GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error)
 	ListDeviceUpdateSessions(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error)
@@ -63,7 +64,7 @@ type Service interface {
 	GetStuckUpdates(ctx context.Context, thresholdMinutes int) ([]*models.OTAUpdateSession, error)
 	GetUpdateStats(ctx context.Context) (map[string]interface{}, error)
 
-	// NEW: Enhanced Firmware Management API methods
+	// Enhanced Firmware Management API methods
 	UploadFirmware(ctx context.Context, file io.Reader, filename string, releaseType models.ReleaseType, version string, isTest bool, notes string) (*models.FirmwareReleaseExtended, error)
 	ValidateFirmware(ctx context.Context, releaseID uint) (*models.FirmwareReleaseValidation, error)
 	SignFirmware(ctx context.Context, releaseID uint, privateKeyPEM string) error
@@ -83,53 +84,111 @@ type service struct {
 	log             *logrus.Logger
 	msgProcessor    *MessageProcessor
 	
-	// NEW: Added Services
+	// Added Services
 	firmwareService FirmwareService
 	otaService      OTAService
 }
 
-// NewService creates a new service instance
-func NewService(
-	repo repository.Repository, 
-	cache cache.RedisClient,
-	messagingClient messaging.ServiceBusClient,
-	log *logrus.Logger,
-) Service {
-	// Calculate optimal worker count based on available CPUs and a multiplier
-	// This helps ensure we have enough workers to handle concurrent requests
-	// without overwhelming the system
+// ServiceConfig holds the configuration for the service
+type ServiceConfig struct {
+	Repository      repository.Repository
+	Cache           cache.RedisClient
+	MessagingClient messaging.ServiceBusClient
+	Logger          *logrus.Logger
+	StoragePath     string
+}
+
+// NewService creates a new service instance with improved configuration
+func NewService(config ServiceConfig) (Service, error) {
+	// Validate required config
+	if config.Repository == nil {
+		return nil, errors.New("repository is required")
+	}
+	if config.Cache == nil {
+		return nil, errors.New("cache is required")
+	}
+	if config.MessagingClient == nil {
+		return nil, errors.New("messaging client is required")
+	}
+	if config.Logger == nil {
+		config.Logger = logrus.New() // Default logger
+	}
+	if config.StoragePath == "" {
+		config.StoragePath = "/var/firmware" // Default storage path
+	}
+
+	// Calculate optimal worker count based on available CPUs
 	workerCount := runtime.NumCPU() * 2
 	if workerCount < 4 {
 		workerCount = 4 // Minimum 4 workers
 	}
 	
 	// Create message processor for asynchronous processing
-	msgProcessor := NewMessageProcessor(repo, cache, messagingClient, log, workerCount)
+	msgProcessor := NewMessageProcessor(
+		config.Repository,
+		config.Cache,
+		config.MessagingClient,
+		config.Logger,
+		workerCount,
+	)
 	
-	// Create firmware repo
-	firmwareRepo := repository.NewFirmwareRepository(repo.(*repository.repo).db)
+	// Extract the DB connection for specialized repositories
+	var db database.DB
+	if repoImpl, ok := config.Repository.(*repository.repo); ok {
+		db = repoImpl.db
+	} else {
+		return nil, errors.New("unable to get database connection from repository")
+	}
 	
-	// Create OTA repo
-	otaRepo := repository.NewOTARepository(repo.(*repository.repo).db)
+	// Create specialized repositories
+	firmwareRepo := repository.NewFirmwareRepository(db)
+	otaRepo := repository.NewOTARepository(db)
 	
-	// Create firmware service with storage path from config
-	firmwareService, err := NewFirmwareService(repo, firmwareRepo, log, "/var/firmware")
+	// Create firmware service
+	firmwareService, err := NewFirmwareService(
+		config.Repository,
+		firmwareRepo,
+		config.Logger,
+		config.StoragePath,
+	)
 	if err != nil {
-		log.WithError(err).Fatal("Failed to create firmware service")
+		return nil, fmt.Errorf("failed to create firmware service: %w", err)
 	}
 	
 	// Create OTA service
-	otaService := NewOTAService(repo, otaRepo, firmwareRepo, firmwareService, log)
+	otaService := NewOTAService(
+		config.Repository,
+		otaRepo,
+		firmwareRepo,
+		firmwareService,
+		config.Logger,
+	)
 	
 	return &service{
-		repo:            repo,
-		cache:           cache,
-		messagingClient: messagingClient,
-		log:             log,
+		repo:            config.Repository,
+		cache:           config.Cache,
+		messagingClient: config.MessagingClient,
+		log:             config.Logger,
 		msgProcessor:    msgProcessor,
 		firmwareService: firmwareService,
 		otaService:      otaService,
-	}
+	}, nil
+}
+
+// Legacy constructor for backward compatibility
+func NewServiceLegacy(
+	repo repository.Repository, 
+	cache cache.RedisClient,
+	messagingClient messaging.ServiceBusClient,
+	log *logrus.Logger,
+) (Service, error) {
+	return NewService(ServiceConfig{
+		Repository:      repo,
+		Cache:           cache,
+		MessagingClient: messagingClient,
+		Logger:          log,
+		StoragePath:     "/var/firmware",
+	})
 }
 
 // Device operations implementation
@@ -377,7 +436,7 @@ func (s *service) ActivateFirmwareRelease(ctx context.Context, id uint) error {
 	return s.repo.UpdateFirmwareRelease(ctx, release)
 }
 
-// NEW: OTA Update Service methods - delegated to otaService
+// OTA Update Service methods - delegated to otaService
 func (s *service) CreateUpdateSession(ctx context.Context, deviceID, firmwareID uint, priority uint, forceUpdate, allowRollback bool) (*models.OTAUpdateSession, error) {
 	return s.otaService.CreateUpdateSession(ctx, deviceID, firmwareID, priority, forceUpdate, allowRollback)
 }
@@ -426,7 +485,7 @@ func (s *service) GetUpdateStats(ctx context.Context) (map[string]interface{}, e
 	return s.otaService.GetUpdateStats(ctx)
 }
 
-// NEW: Firmware Service methods - delegated to firmwareService
+// Firmware Service methods - delegated to firmwareService
 func (s *service) UploadFirmware(ctx context.Context, file io.Reader, filename string, releaseType models.ReleaseType, version string, isTest bool, notes string) (*models.FirmwareReleaseExtended, error) {
 	return s.firmwareService.UploadFirmware(ctx, file, filename, releaseType, version, isTest, notes)
 }

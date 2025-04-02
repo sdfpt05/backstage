@@ -4,18 +4,17 @@ import (
 	"fmt"
 	"os"
 
-	"example.com/backstage/pkg/common"
 	"example.com/backstage/services/device/config"
-	
+
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var (
 	// Used for flags
-	cfgFile     string
-	logLevel    string
-	logFormat   string
+	cfgFile   string
+	logLevel  string
+	logFormat string
 
 	// Logger instance for all commands
 	log = logrus.New()
@@ -30,7 +29,7 @@ and message processing for the backstage platform.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Set up logging based on command line flags
 		setupLogging()
-		
+
 		// Initialize configuration
 		if err := config.InitConfig(cfgFile); err != nil {
 			log.Fatalf("Error initializing configuration: %v", err)
@@ -49,17 +48,17 @@ func Execute() {
 
 func init() {
 	// Initialize root command flags
-	
+
 	// Config file flag
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ./config.yaml)")
-	
+
 	// Logging flags
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "json", "log format (json, text)")
-	
+
 	// Version flag with short form option
 	rootCmd.PersistentFlags().BoolP("version", "v", false, "display version information")
-	
+
 	// Handle version flag if present
 	cobra.OnInitialize(func() {
 		if v, _ := rootCmd.PersistentFlags().GetBool("version"); v {
@@ -84,7 +83,7 @@ func setupLogging() {
 	default:
 		log.SetLevel(logrus.InfoLevel)
 	}
-	
+
 	// Set log format
 	if logFormat == "json" {
 		log.SetFormatter(&logrus.JSONFormatter{})
@@ -93,7 +92,7 @@ func setupLogging() {
 			FullTimestamp: true,
 		})
 	}
-	
+
 	// Output to stderr
 	log.SetOutput(os.Stderr)
 }

@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-    "math/big"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,6 +52,7 @@ type FirmwareService interface {
 // firmwareService implements FirmwareService
 type firmwareService struct {
 	repo           repository.Repository
+	firmwareRepo   repository.FirmwareRepository
 	log            *logrus.Logger
 	storagePath    string
 	signatureKeys  map[string]*ecdsa.PrivateKey
@@ -61,6 +62,7 @@ type firmwareService struct {
 // NewFirmwareService creates a new firmware service
 func NewFirmwareService(
 	repo repository.Repository,
+	firmwareRepo repository.FirmwareRepository,
 	log *logrus.Logger,
 	storagePath string,
 ) (FirmwareService, error) {
@@ -133,6 +135,7 @@ func NewFirmwareService(
 	
 	return &firmwareService{
 		repo:          repo,
+		firmwareRepo:  firmwareRepo,
 		log:           log,
 		storagePath:   storagePath,
 		signatureKeys: signatureKeys,
@@ -207,7 +210,7 @@ func (s *firmwareService) UploadFirmware(
 	}
 	
 	// Save to database
-	if err := s.repo.CreateFirmwareRelease(ctx, firmwareRelease); err != nil {
+	if err := s.firmwareRepo.CreateFirmwareRelease(ctx, firmwareRelease); err != nil {
 		os.Remove(filePath) // Clean up on error
 		return nil, fmt.Errorf("failed to save firmware release: %w", err)
 	}
@@ -243,7 +246,7 @@ func (s *firmwareService) ValidateFirmware(ctx context.Context, releaseID uint) 
 	if _, err := os.Stat(release.FilePath); os.IsNotExist(err) {
 		validation.ValidationStatus = "failed"
 		validation.ValidationErrors = "Firmware file not found"
-		validation.HashValid = false
+		validation.FileHashValid = false
 		
 		// Save validation results
 		if err := s.firmwareRepo.CreateFirmwareValidation(ctx, validation); err != nil {
@@ -384,7 +387,7 @@ func (s *firmwareService) SignFirmware(ctx context.Context, releaseID uint, priv
 	}
 	
 	// Read the firmware file
-	fileData, err := ioutil.ReadFile(release.FilePath)
+	fileData, err := s.readFileWithValidation(release.FilePath)
 	if err != nil {
 		return fmt.Errorf("failed to read firmware file: %w", err)
 	}
@@ -534,48 +537,8 @@ func (s *firmwareService) CompareVersions(v1, v2 string) (int, error) {
 		return 0, fmt.Errorf("failed to parse version 2: %w", err)
 	}
 	
-	// Compare major version
-	if semVer1.Major < semVer2.Major {
-		return -1, nil
-	}
-	if semVer1.Major > semVer2.Major {
-		return 1, nil
-	}
-	
-	// Compare minor version
-	if semVer1.Minor < semVer2.Minor {
-		return -1, nil
-	}
-	if semVer1.Minor > semVer2.Minor {
-		return 1, nil
-	}
-	
-	// Compare patch version
-	if semVer1.Patch < semVer2.Patch {
-		return -1, nil
-	}
-	if semVer1.Patch > semVer2.Patch {
-		return 1, nil
-	}
-	
-	// Compare pre-release (pre-release versions are lower than release versions)
-	if semVer1.PreRelease == "" && semVer2.PreRelease != "" {
-		return 1, nil
-	}
-	if semVer1.PreRelease != "" && semVer2.PreRelease == "" {
-		return -1, nil
-	}
-	if semVer1.PreRelease < semVer2.PreRelease {
-		return -1, nil
-	}
-	if semVer1.PreRelease > semVer2.PreRelease {
-		return 1, nil
-	}
-	
-	// Build metadata is ignored for comparison
-	
-	// Versions are equal
-	return 0, nil
+	// Compare using the helper method
+	return s.compareSemanticVersions(semVer1, semVer2)
 }
 
 // GetFirmwareByVersion gets a firmware release by version
@@ -598,13 +561,18 @@ func (s *firmwareService) GetFirmwareFile(ctx context.Context, releaseID uint) (
 	// Get the firmware release
 	release, err := s.firmwareRepo.GetFirmwareReleaseByID(ctx, releaseID)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get firmware release: %w", err)
+		return "", nil, fmt.Errorf("failed to get firmware release %d: %w", releaseID, err)
+	}
+	
+	// Check if file exists
+	if _, err := os.Stat(release.FilePath); os.IsNotExist(err) {
+		return "", nil, fmt.Errorf("firmware file not found at path %s: %w", release.FilePath, err)
 	}
 	
 	// Open the file
 	file, err := os.Open(release.FilePath)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to open firmware file: %w", err)
+		return "", nil, fmt.Errorf("failed to open firmware file %s: %w", release.FilePath, err)
 	}
 	
 	return filepath.Base(release.FilePath), file, nil
@@ -744,6 +712,22 @@ func (s *firmwareService) SignManifest(ctx context.Context, manifestID uint, pri
 
 // Helper functions
 
+// readFileWithValidation reads a file with validation
+func (s *firmwareService) readFileWithValidation(filePath string) ([]byte, error) {
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("file not found at path %s: %w", filePath, err)
+	}
+	
+	// Read the file
+	data, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+	
+	return data, nil
+}
+
 // verifySignature verifies the signature of a firmware release
 func (s *firmwareService) verifySignature(release *models.FirmwareReleaseExtended) bool {
 	// Check if signature algorithm is supported
@@ -753,7 +737,7 @@ func (s *firmwareService) verifySignature(release *models.FirmwareReleaseExtende
 	}
 	
 	// Read the firmware file
-	fileData, err := ioutil.ReadFile(release.FilePath)
+	fileData, err := s.readFileWithValidation(release.FilePath)
 	if err != nil {
 		s.log.WithError(err).Error("Failed to read firmware file for signature verification")
 		return false

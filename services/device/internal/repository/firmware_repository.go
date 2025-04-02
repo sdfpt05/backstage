@@ -6,16 +6,36 @@ import (
 	"fmt"
 	"time"
 
+	"example.com/backstage/services/device/internal/database"
 	"example.com/backstage/services/device/internal/models"
 	"gorm.io/gorm"
 )
 
-// Enhanced Firmware Release operations implementation
+// Implementation of FirmwareRepository interface
 
-func (r *repo) CreateFirmwareReleaseExtended(ctx context.Context, release *models.FirmwareReleaseExtended) error {
+// GetFirmwareReleaseByID retrieves a firmware release by ID
+func (r *firmwareRepo) GetFirmwareReleaseByID(ctx context.Context, id uint) (*models.FirmwareReleaseExtended, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	var release models.FirmwareReleaseExtended
+	if err := gormDB.Preload("TestRelease").Preload("TestDevice").Preload("ProductionRelease").First(&release, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("firmware release with ID %d not found", id)
+		}
+		return nil, fmt.Errorf("failed to get firmware release: %w", err)
+	}
+
+	return &release, nil
+}
+
+// CreateFirmwareRelease creates a new firmware release
+func (r *firmwareRepo) CreateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return fmt.Errorf("database error: %w", err)
 	}
 
 	// Run in transaction to ensure atomicity
@@ -36,7 +56,7 @@ func (r *repo) CreateFirmwareReleaseExtended(ctx context.Context, release *model
 		}
 
 		if err := tx.Create(baseRelease).Error; err != nil {
-			return err
+			return fmt.Errorf("failed to create base firmware release: %w", err)
 		}
 
 		// Set the ID of the embedded firmware release to the new one
@@ -44,17 +64,18 @@ func (r *repo) CreateFirmwareReleaseExtended(ctx context.Context, release *model
 
 		// Now create the extended release with a reference to the base release
 		if err := tx.Create(release).Error; err != nil {
-			return err
+			return fmt.Errorf("failed to create extended firmware release: %w", err)
 		}
 
 		return nil
 	})
 }
 
-func (r *repo) UpdateFirmwareReleaseExtended(ctx context.Context, release *models.FirmwareReleaseExtended) error {
+// UpdateFirmwareRelease updates an existing firmware release
+func (r *firmwareRepo) UpdateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return fmt.Errorf("database error: %w", err)
 	}
 
 	// Run in transaction to ensure atomicity
@@ -76,67 +97,49 @@ func (r *repo) UpdateFirmwareReleaseExtended(ctx context.Context, release *model
 		}
 
 		if err := tx.Save(baseRelease).Error; err != nil {
-			return err
+			return fmt.Errorf("failed to update base firmware release: %w", err)
 		}
 
 		// Now update the extended release
 		if err := tx.Save(release).Error; err != nil {
-			return err
+			return fmt.Errorf("failed to update extended firmware release: %w", err)
 		}
 
 		return nil
 	})
 }
 
-func (r *repo) FindFirmwareReleaseExtendedByID(ctx context.Context, id uint) (*models.FirmwareReleaseExtended, error) {
+// GetFirmwareReleaseByVersion gets a firmware release by version
+func (r *firmwareRepo) GetFirmwareReleaseByVersion(ctx context.Context, version string, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var release models.FirmwareReleaseExtended
-	if err := gormDB.Preload("TestRelease").Preload("TestDevice").Preload("ProductionRelease").First(&release, id).Error; err != nil {
-		return nil, err
+	query := gormDB.Preload("TestRelease").Preload("TestDevice").Preload("ProductionRelease")
+	
+	// Apply filters
+	query = query.Where("version = ?", version)
+	if releaseType != "" {
+		query = query.Where("release_type = ?", releaseType)
+	}
+	
+	if err := query.First(&release).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("firmware release with version %s and type %s not found", version, releaseType)
+		}
+		return nil, fmt.Errorf("failed to get firmware release: %w", err)
 	}
 
 	return &release, nil
 }
 
-func (r *repo) FindFirmwareReleaseByVersion(ctx context.Context, version string) (*models.FirmwareReleaseExtended, error) {
+// ListFirmwareReleases lists firmware releases with optional filtering by type
+func (r *firmwareRepo) ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareReleaseExtended, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
-	}
-
-	var release models.FirmwareReleaseExtended
-	if err := gormDB.Preload("TestRelease").Preload("TestDevice").Preload("ProductionRelease").
-		Where("version = ?", version).First(&release).Error; err != nil {
-		return nil, err
-	}
-
-	return &release, nil
-}
-
-func (r *repo) FindFirmwareReleaseBySemanticVersion(ctx context.Context, major, minor, patch uint) (*models.FirmwareReleaseExtended, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
-	}
-
-	var release models.FirmwareReleaseExtended
-	if err := gormDB.Preload("TestRelease").Preload("TestDevice").Preload("ProductionRelease").
-		Where("major_version = ? AND minor_version = ? AND patch_version = ?", major, minor, patch).
-		First(&release).Error; err != nil {
-		return nil, err
-	}
-
-	return &release, nil
-}
-
-func (r *repo) ListFirmwareReleasesExtended(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareReleaseExtended, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var releases []*models.FirmwareReleaseExtended
@@ -148,38 +151,17 @@ func (r *repo) ListFirmwareReleasesExtended(ctx context.Context, releaseType mod
 	}
 
 	if err := query.Find(&releases).Error; err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list firmware releases: %w", err)
 	}
 
 	return releases, nil
 }
 
-func (r *repo) ValidateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) (*models.FirmwareReleaseValidation, error) {
+// GetLatestFirmwareRelease gets the latest firmware release
+func (r *firmwareRepo) GetLatestFirmwareRelease(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
-	}
-
-	// Create a validation record
-	validation := &models.FirmwareReleaseValidation{
-		FirmwareReleaseID: release.ID,
-		ValidationStatus:  "validating",
-		ValidatedAt:       time.Now(),
-		ValidatedBy:       "system",
-	}
-
-	// Save the initial validation record
-	if err := gormDB.Create(validation).Error; err != nil {
-		return nil, err
-	}
-
-	return validation, nil
-}
-
-func (r *repo) GetLatestFirmwareRelease(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var release models.FirmwareReleaseExtended
@@ -192,43 +174,108 @@ func (r *repo) GetLatestFirmwareRelease(ctx context.Context, releaseType models.
 
 	if err := query.Order("major_version DESC, minor_version DESC, patch_version DESC").
 		First(&release).Error; err != nil {
-		return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no active firmware releases found for type %s", releaseType)
+		}
+		return nil, fmt.Errorf("failed to get latest firmware release: %w", err)
 	}
 
 	return &release, nil
 }
 
-func (r *repo) GetFirmwareManifest(ctx context.Context) (*models.FirmwareManifest, error) {
+// CreateFirmwareValidation creates a validation record for a firmware release
+func (r *firmwareRepo) CreateFirmwareValidation(ctx context.Context, validation *models.FirmwareReleaseValidation) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	if err := gormDB.Create(validation).Error; err != nil {
+		return fmt.Errorf("failed to create firmware validation: %w", err)
+	}
+
+	return nil
+}
+
+// ListValidFirmwareReleases lists valid firmware releases
+func (r *firmwareRepo) ListValidFirmwareReleases(ctx context.Context, releaseType models.ReleaseType, activeOnly bool) ([]*models.FirmwareReleaseExtended, error) {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	var releases []*models.FirmwareReleaseExtended
+	query := gormDB.Preload("TestRelease").Preload("ProductionRelease").
+		Where("valid = ?", true)
+
+	if releaseType != "" {
+		query = query.Where("release_type = ?", releaseType)
+	}
+
+	if activeOnly {
+		query = query.Where("active = ?", true)
+	}
+
+	if err := query.Order("major_version DESC, minor_version DESC, patch_version DESC").
+		Find(&releases).Error; err != nil {
+		return nil, fmt.Errorf("failed to list valid firmware releases: %w", err)
+	}
+
+	return releases, nil
+}
+
+// GetFirmwareManifest gets a firmware manifest by ID
+func (r *firmwareRepo) GetFirmwareManifest(ctx context.Context, id uint) (*models.FirmwareManifest, error) {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var manifest models.FirmwareManifest
-	if err := gormDB.Preload("Releases").Order("created_at DESC").First(&manifest).Error; err != nil {
+	if err := gormDB.Preload("Releases").First(&manifest, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// If no manifest exists, create a new one
-			manifest = models.FirmwareManifest{
-				ManifestVersion:    "1.0.0",
-				GeneratedAt:        time.Now(),
-				MinimumVersion:     "1.0.0",
-				RecommendedVersion: "1.0.0",
-			}
-			if err := gormDB.Create(&manifest).Error; err != nil {
-				return nil, err
-			}
-			return &manifest, nil
+			return nil, fmt.Errorf("firmware manifest with ID %d not found", id)
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to get firmware manifest: %w", err)
 	}
 
 	return &manifest, nil
 }
 
-func (r *repo) UpdateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest) error {
+// CreateFirmwareManifest creates a new firmware manifest
+func (r *firmwareRepo) CreateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest, releases []*models.FirmwareReleaseExtended) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	// Run in transaction
+	return gormDB.Transaction(func(tx *gorm.DB) error {
+		// First create the manifest
+		if err := tx.Create(manifest).Error; err != nil {
+			return fmt.Errorf("failed to create firmware manifest: %w", err)
+		}
+
+		// Convert extended releases to base releases for the association
+		baseReleases := make([]models.FirmwareRelease, len(releases))
+		for i, release := range releases {
+			baseReleases[i] = release.FirmwareRelease
+		}
+
+		// Associate releases with manifest
+		if err := tx.Model(manifest).Association("Releases").Append(baseReleases); err != nil {
+			return fmt.Errorf("failed to associate releases with manifest: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// UpdateFirmwareManifest updates an existing firmware manifest
+func (r *firmwareRepo) UpdateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return fmt.Errorf("database error: %w", err)
 	}
 
 	// Run in transaction to handle associations

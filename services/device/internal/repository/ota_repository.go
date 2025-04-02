@@ -2,82 +2,69 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"example.com/backstage/services/device/internal/database"
 	"example.com/backstage/services/device/internal/models"
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-// OTA Update Session operations implementation
+// Implementation of OTARepository interface
 
-func (r *repo) CreateOTAUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error {
+// GetUpdateSession gets an update session by ID
+func (r *otaRepo) GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
-	}
-
-	// Generate a unique session ID if not provided
-	if session.SessionID == "" {
-		session.SessionID = uuid.New().String()
-	}
-
-	// Set initial status if not provided
-	if session.Status == "" {
-		session.Status = models.OTAStatusScheduled
-	}
-
-	// Set scheduled time if not provided
-	if session.ScheduledAt.IsZero() {
-		session.ScheduledAt = time.Now()
-	}
-
-	return gormDB.Create(session).Error
-}
-
-func (r *repo) UpdateOTAUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return err
-	}
-
-	return gormDB.Save(session).Error
-}
-
-func (r *repo) FindOTAUpdateSessionByID(ctx context.Context, id uint) (*models.OTAUpdateSession, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
-	}
-
-	var session models.OTAUpdateSession
-	if err := gormDB.Preload("Device").Preload("FirmwareRelease").First(&session, id).Error; err != nil {
-		return nil, err
-	}
-
-	return &session, nil
-}
-
-func (r *repo) FindOTAUpdateSessionBySessionID(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var session models.OTAUpdateSession
 	if err := gormDB.Preload("Device").Preload("FirmwareRelease").
 		Where("session_id = ?", sessionID).First(&session).Error; err != nil {
-		return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("update session with ID %s not found", sessionID)
+		}
+		return nil, fmt.Errorf("failed to get update session: %w", err)
 	}
 
 	return &session, nil
 }
 
-func (r *repo) ListOTAUpdateSessionsByDevice(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error) {
+// CreateUpdateSession creates a new update session
+func (r *otaRepo) CreateUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	if err := gormDB.Create(session).Error; err != nil {
+		return fmt.Errorf("failed to create update session: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateUpdateSession updates an existing update session
+func (r *otaRepo) UpdateUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	if err := gormDB.Save(session).Error; err != nil {
+		return fmt.Errorf("failed to update session: %w", err)
+	}
+
+	return nil
+}
+
+// ListDeviceUpdateSessions lists update sessions for a device
+func (r *otaRepo) ListDeviceUpdateSessions(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error) {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var sessions []*models.OTAUpdateSession
@@ -90,167 +77,76 @@ func (r *repo) ListOTAUpdateSessionsByDevice(ctx context.Context, deviceID uint,
 	}
 
 	if err := query.Find(&sessions).Error; err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list device update sessions: %w", err)
 	}
 
 	return sessions, nil
 }
 
-func (r *repo) ListOTAUpdateSessionsByStatus(ctx context.Context, status models.OTAUpdateStatus, limit int) ([]*models.OTAUpdateSession, error) {
+// GetPendingUpdateSessions gets pending update sessions for a device
+func (r *otaRepo) GetPendingUpdateSessions(ctx context.Context, deviceID uint) ([]*models.OTAUpdateSession, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	var sessions []*models.OTAUpdateSession
-	query := gormDB.Preload("Device").Preload("FirmwareRelease").
-		Where("status = ?", status).
-		Order("created_at ASC") // Process oldest first
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-
-	if err := query.Find(&sessions).Error; err != nil {
-		return nil, err
+	if err := gormDB.Preload("FirmwareRelease").
+		Where("device_id = ? AND status IN ?", deviceID, []models.OTAUpdateStatus{
+			models.OTAStatusScheduled,
+			models.OTAStatusPending,
+		}).
+		Order("priority DESC, created_at ASC").
+		Find(&sessions).Error; err != nil {
+		return nil, fmt.Errorf("failed to get pending update sessions: %w", err)
 	}
 
 	return sessions, nil
 }
 
-func (r *repo) UpdateOTAUpdateSessionStatus(ctx context.Context, sessionID string, status models.OTAUpdateStatus) error {
+// GetUpdateBatch gets a batch by ID
+func (r *otaRepo) GetUpdateBatch(ctx context.Context, batchID string) (*models.OTAUpdateBatch, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	updates := map[string]interface{}{
-		"status":     status,
-		"updated_at": time.Now(),
+	var batch models.OTAUpdateBatch
+	if err := gormDB.Preload("FirmwareRelease").
+		Where("batch_id = ?", batchID).First(&batch).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("update batch with ID %s not found", batchID)
+		}
+		return nil, fmt.Errorf("failed to get update batch: %w", err)
 	}
 
-	// Set additional timestamp fields based on status
-	switch status {
-	case models.OTAStatusAcknowledged:
-		now := time.Now()
-		updates["acknowledged_at"] = now
-	case models.OTAStatusDownloading:
-		now := time.Now()
-		updates["download_started_at"] = now
-	case models.OTAStatusDownloaded:
-		now := time.Now()
-		updates["download_completed_at"] = now
-	case models.OTAStatusVerifying:
-		now := time.Now()
-		updates["verification_started_at"] = now
-	case models.OTAStatusInstalling:
-		now := time.Now()
-		updates["install_started_at"] = now
-	case models.OTAStatusCompleted:
-		now := time.Now()
-		updates["install_completed_at"] = now
-		updates["completed_at"] = now
-	case models.OTAStatusFailed:
-		now := time.Now()
-		updates["failed_at"] = now
-	}
-
-	return gormDB.Model(&models.OTAUpdateSession{}).
-		Where("session_id = ?", sessionID).
-		Updates(updates).Error
+	return &batch, nil
 }
 
-func (r *repo) UpdateOTAUpdateSessionProgress(ctx context.Context, sessionID string, bytesDownloaded uint64, chunksReceived uint) error {
+// CreateUpdateBatch creates a new update batch
+func (r *otaRepo) CreateUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return fmt.Errorf("database error: %w", err)
 	}
 
-	now := time.Now()
-	
-	return gormDB.Model(&models.OTAUpdateSession{}).
-		Where("session_id = ?", sessionID).
-		Updates(map[string]interface{}{
-			"bytes_downloaded": bytesDownloaded,
-			"chunks_received":  chunksReceived,
-			"last_chunk_time":  now,
-			"updated_at":       now,
-		}).Error
-}
-
-// OTA Update Batch operations implementation
-
-func (r *repo) CreateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return err
-	}
-
-	// Generate a unique batch ID if not provided
-	if batch.BatchID == "" {
-		batch.BatchID = fmt.Sprintf("batch-%s", uuid.New().String())
-	}
-
-	// Set initial status if not provided
-	if batch.Status == "" {
-		batch.Status = models.OTAStatusScheduled
-	}
-
-	// Set scheduled time if not provided
-	if batch.ScheduledAt.IsZero() {
-		batch.ScheduledAt = time.Now()
-	}
-
-	// Run in transaction to create batch and related sessions
+	// Run in transaction
 	return gormDB.Transaction(func(tx *gorm.DB) error {
 		// Save the batch first
 		if err := tx.Create(batch).Error; err != nil {
-			return err
-		}
-
-		// Store the total count
-		batch.TotalCount = uint(len(batch.Sessions))
-		batch.PendingCount = batch.TotalCount
-
-		// Update the counts
-		if err := tx.Save(batch).Error; err != nil {
-			return err
+			return fmt.Errorf("failed to create update batch: %w", err)
 		}
 
 		// Process sessions if any
 		if len(batch.Sessions) > 0 {
-			// Ensure all sessions have the batch ID
-			for i := range batch.Sessions {
-				batch.Sessions[i].BatchID = batch.BatchID
-				
-				// Fill in required fields if not provided
-				if batch.Sessions[i].SessionID == "" {
-					batch.Sessions[i].SessionID = uuid.New().String()
-				}
-				
-				if batch.Sessions[i].Status == "" {
-					batch.Sessions[i].Status = models.OTAStatusScheduled
-				}
-				
-				if batch.Sessions[i].ScheduledAt.IsZero() {
-					batch.Sessions[i].ScheduledAt = batch.ScheduledAt
-				}
-				
-				batch.Sessions[i].Priority = batch.Priority
-				batch.Sessions[i].ForceUpdate = batch.ForceUpdate
-				batch.Sessions[i].AllowRollback = batch.AllowRollback
-				batch.Sessions[i].FirmwareReleaseID = batch.FirmwareReleaseID
-				batch.Sessions[i].UpdateType = batch.UpdateType
-			}
-			
-			// Save all sessions in batches to avoid overwhelming the database
+			// Create in batches of 100
 			batchSize := 100
 			for i := 0; i < len(batch.Sessions); i += batchSize {
 				end := i + batchSize
 				if end > len(batch.Sessions) {
 					end = len(batch.Sessions)
 				}
-				
+
 				if err := tx.Create(batch.Sessions[i:end]).Error; err != nil {
 					return fmt.Errorf("failed to create update sessions batch %d-%d: %w", i, end, err)
 				}
@@ -261,136 +157,57 @@ func (r *repo) CreateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdate
 	})
 }
 
-func (r *repo) UpdateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error {
+// UpdateUpdateBatch updates an existing update batch
+func (r *otaRepo) UpdateUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return fmt.Errorf("database error: %w", err)
 	}
 
-	// Update the batch excluding sessions (handled separately if needed)
-	return gormDB.Save(batch).Error
+	if err := gormDB.Save(batch).Error; err != nil {
+		return fmt.Errorf("failed to update batch: %w", err)
+	}
+
+	return nil
 }
 
-func (r *repo) FindOTAUpdateBatchByID(ctx context.Context, id uint) (*models.OTAUpdateBatch, error) {
+// ListBatchUpdateSessions lists update sessions in a batch
+func (r *otaRepo) ListBatchUpdateSessions(ctx context.Context, batchID string) ([]*models.OTAUpdateSession, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	var batch models.OTAUpdateBatch
-	if err := gormDB.Preload("FirmwareRelease").First(&batch, id).Error; err != nil {
-		return nil, err
-	}
-
-	return &batch, nil
-}
-
-func (r *repo) FindOTAUpdateBatchByBatchID(ctx context.Context, batchID string) (*models.OTAUpdateBatch, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
-	}
-
-	var batch models.OTAUpdateBatch
-	if err := gormDB.Preload("FirmwareRelease").
-		Where("batch_id = ?", batchID).First(&batch).Error; err != nil {
-		return nil, err
-	}
-
-	// Get the sessions for this batch
 	var sessions []*models.OTAUpdateSession
 	if err := gormDB.Preload("Device").Preload("FirmwareRelease").
 		Where("batch_id = ?", batchID).Find(&sessions).Error; err != nil {
-		return nil, fmt.Errorf("failed to get batch sessions: %w", err)
+		return nil, fmt.Errorf("failed to list batch update sessions: %w", err)
 	}
 
-	batch.Sessions = sessions
-	return &batch, nil
+	return sessions, nil
 }
 
-func (r *repo) ListOTAUpdateBatchesByStatus(ctx context.Context, status models.OTAUpdateStatus, limit int) ([]*models.OTAUpdateBatch, error) {
+// CreateDeviceLog creates a device log entry
+func (r *otaRepo) CreateDeviceLog(ctx context.Context, log *models.OTADeviceLog) error {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("database error: %w", err)
 	}
 
-	var batches []*models.OTAUpdateBatch
-	query := gormDB.Preload("FirmwareRelease").
-		Where("status = ?", status).
-		Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
+	if err := gormDB.Create(log).Error; err != nil {
+		return fmt.Errorf("failed to create device log: %w", err)
 	}
 
-	if err := query.Find(&batches).Error; err != nil {
-		return nil, err
-	}
-
-	return batches, nil
+	return nil
 }
 
-// OTA Device Log operations implementation
-
-func (r *repo) LogOTAEvent(ctx context.Context, log *models.OTADeviceLog) error {
+// GetStuckUpdateSessions gets stuck update sessions
+func (r *otaRepo) GetStuckUpdateSessions(ctx context.Context, threshold time.Time) ([]*models.OTAUpdateSession, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	return gormDB.Create(log).Error
-}
-
-func (r *repo) GetOTALogsBySession(ctx context.Context, sessionID string, limit int) ([]*models.OTADeviceLog, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
-	}
-
-	var logs []*models.OTADeviceLog
-	query := gormDB.Where("session_id = ?", sessionID).Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-
-	if err := query.Find(&logs).Error; err != nil {
-		return nil, err
-	}
-
-	return logs, nil
-}
-
-func (r *repo) GetOTALogsByDevice(ctx context.Context, deviceID uint, limit int) ([]*models.OTADeviceLog, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
-	}
-
-	var logs []*models.OTADeviceLog
-	query := gormDB.Where("device_id = ?", deviceID).Order("created_at DESC")
-
-	if limit > 0 {
-		query = query.Limit(limit)
-	}
-
-	if err := query.Find(&logs).Error; err != nil {
-		return nil, err
-	}
-
-	return logs, nil
-}
-
-// Health monitoring operations
-
-func (r *repo) FindStaleOTAUpdateSessions(ctx context.Context, threshold time.Duration) ([]*models.OTAUpdateSession, error) {
-	gormDB, err := r.db.DB()
-	if err != nil {
-		return nil, err
-	}
-
-	thresholdTime := time.Now().Add(-threshold)
-	
 	var staleSessions []*models.OTAUpdateSession
 	
 	// Find sessions that have been stuck in an intermediate state for too long
@@ -399,34 +216,95 @@ func (r *repo) FindStaleOTAUpdateSessions(ctx context.Context, threshold time.Du
 			  (status = ? AND acknowledged_at < ?) OR 
 			  (status = ? AND verification_started_at < ?) OR
 			  (status = ? AND install_started_at < ?)`,
-			models.OTAStatusDownloading, thresholdTime,
-			models.OTAStatusAcknowledged, thresholdTime,
-			models.OTAStatusVerifying, thresholdTime,
-			models.OTAStatusInstalling, thresholdTime).
+			models.OTAStatusDownloading, threshold,
+			models.OTAStatusAcknowledged, threshold,
+			models.OTAStatusVerifying, threshold,
+			models.OTAStatusInstalling, threshold).
 		Find(&staleSessions).Error; err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get stuck update sessions: %w", err)
 	}
 	
 	return staleSessions, nil
 }
 
-func (r *repo) CancelOTAUpdateSession(ctx context.Context, sessionID string, reason string) error {
+// GetUpdateStats gets statistics about updates
+func (r *otaRepo) GetUpdateStats(ctx context.Context) (map[string]interface{}, error) {
 	gormDB, err := r.db.DB()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	// Update the session status and add error message
-	now := time.Now()
-	return gormDB.Model(&models.OTAUpdateSession{}).
-		Where("session_id = ? AND status NOT IN (?, ?, ?)",
-			sessionID,
-			models.OTAStatusCompleted,
-			models.OTAStatusFailed,
-			models.OTAStatusCancelled).
-		Updates(map[string]interface{}{
-			"status":        models.OTAStatusCancelled,
-			"error_message": reason,
-			"updated_at":    now,
-		}).Error
+	stats := make(map[string]interface{})
+	
+	// Get count of sessions by status
+	var statusCounts []struct {
+		Status string
+		Count  int
+	}
+	
+	if err := gormDB.Model(&models.OTAUpdateSession{}).
+		Select("status, count(*) as count").
+		Group("status").
+		Find(&statusCounts).Error; err != nil {
+		return nil, fmt.Errorf("failed to get status counts: %w", err)
+	}
+	
+	// Convert to map
+	statusCountMap := make(map[string]int)
+	for _, sc := range statusCounts {
+		statusCountMap[sc.Status] = sc.Count
+	}
+	stats["status_counts"] = statusCountMap
+	
+	// Get count of batches by status
+	var batchStatusCounts []struct {
+		Status string
+		Count  int
+	}
+	
+	if err := gormDB.Model(&models.OTAUpdateBatch{}).
+		Select("status, count(*) as count").
+		Group("status").
+		Find(&batchStatusCounts).Error; err != nil {
+		return nil, fmt.Errorf("failed to get batch status counts: %w", err)
+	}
+	
+	// Convert to map
+	batchStatusCountMap := make(map[string]int)
+	for _, sc := range batchStatusCounts {
+		batchStatusCountMap[sc.Status] = sc.Count
+	}
+	stats["batch_status_counts"] = batchStatusCountMap
+	
+	// Get total sessions and batches
+	var totalSessions, totalBatches int64
+	
+	if err := gormDB.Model(&models.OTAUpdateSession{}).Count(&totalSessions).Error; err != nil {
+		return nil, fmt.Errorf("failed to get total sessions: %w", err)
+	}
+	stats["total_sessions"] = totalSessions
+	
+	if err := gormDB.Model(&models.OTAUpdateBatch{}).Count(&totalBatches).Error; err != nil {
+		return nil, fmt.Errorf("failed to get total batches: %w", err)
+	}
+	stats["total_batches"] = totalBatches
+	
+	// Get recent activity
+	var recentActivity []struct {
+		Date  string
+		Count int
+	}
+	
+	if err := gormDB.Model(&models.OTAUpdateSession{}).
+		Select("DATE(created_at) as date, count(*) as count").
+		Where("created_at > ?", time.Now().AddDate(0, 0, -30)).
+		Group("DATE(created_at)").
+		Order("date DESC").
+		Find(&recentActivity).Error; err != nil {
+		return nil, fmt.Errorf("failed to get recent activity: %w", err)
+	}
+	
+	stats["recent_activity"] = recentActivity
+	
+	return stats, nil
 }

@@ -12,6 +12,9 @@ import (
 
 // Repository provides data access methods
 type Repository interface {
+	// Transaction support
+	WithTransaction(ctx context.Context, fn func(ctx context.Context, txRepo Repository) error) error
+
 	// Device operations
 	CreateDevice(ctx context.Context, device *models.Device) error
 	UpdateDevice(ctx context.Context, device *models.Device) error
@@ -47,38 +50,37 @@ type Repository interface {
 	UpdateAPIKey(ctx context.Context, apiKey *models.APIKey) error
 	ListAPIKeys(ctx context.Context) ([]*models.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id uint) error
-    
-	// Enhanced Firmware Release operations
-	CreateFirmwareReleaseExtended(ctx context.Context, release *models.FirmwareReleaseExtended) error
-	UpdateFirmwareReleaseExtended(ctx context.Context, release *models.FirmwareReleaseExtended) error
-	FindFirmwareReleaseExtendedByID(ctx context.Context, id uint) (*models.FirmwareReleaseExtended, error)
-	FindFirmwareReleaseByVersion(ctx context.Context, version string) (*models.FirmwareReleaseExtended, error)
-	FindFirmwareReleaseBySemanticVersion(ctx context.Context, major, minor, patch uint) (*models.FirmwareReleaseExtended, error)
-	ListFirmwareReleasesExtended(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareReleaseExtended, error)
-	ValidateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) (*models.FirmwareReleaseValidation, error)
-	GetLatestFirmwareRelease(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error)
-	GetFirmwareManifest(ctx context.Context) (*models.FirmwareManifest, error)
-	UpdateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest) error
+}
 
-	// OTA Update operations
-	CreateOTAUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error
-	UpdateOTAUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error
-	FindOTAUpdateSessionByID(ctx context.Context, id uint) (*models.OTAUpdateSession, error)
-	FindOTAUpdateSessionBySessionID(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error)
-	ListOTAUpdateSessionsByDevice(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error)
-	ListOTAUpdateSessionsByStatus(ctx context.Context, status models.OTAUpdateStatus, limit int) ([]*models.OTAUpdateSession, error)
-	UpdateOTAUpdateSessionStatus(ctx context.Context, sessionID string, status models.OTAUpdateStatus) error
-	UpdateOTAUpdateSessionProgress(ctx context.Context, sessionID string, bytesDownloaded uint64, chunksReceived uint) error
-	CreateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error
-	UpdateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error
-	FindOTAUpdateBatchByID(ctx context.Context, id uint) (*models.OTAUpdateBatch, error)
-	FindOTAUpdateBatchByBatchID(ctx context.Context, batchID string) (*models.OTAUpdateBatch, error)
-	ListOTAUpdateBatchesByStatus(ctx context.Context, status models.OTAUpdateStatus, limit int) ([]*models.OTAUpdateBatch, error)
-	LogOTAEvent(ctx context.Context, log *models.OTADeviceLog) error
-	GetOTALogsBySession(ctx context.Context, sessionID string, limit int) ([]*models.OTADeviceLog, error)
-	GetOTALogsByDevice(ctx context.Context, deviceID uint, limit int) ([]*models.OTADeviceLog, error)
-	FindStaleOTAUpdateSessions(ctx context.Context, threshold time.Duration) ([]*models.OTAUpdateSession, error)
-	CancelOTAUpdateSession(ctx context.Context, sessionID string, reason string) error
+// FirmwareRepository provides firmware-specific data access methods
+type FirmwareRepository interface {
+	GetFirmwareReleaseByID(ctx context.Context, id uint) (*models.FirmwareReleaseExtended, error)
+	CreateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) error
+	UpdateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) error
+	GetFirmwareReleaseByVersion(ctx context.Context, version string, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error)
+	ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareReleaseExtended, error)
+	GetLatestFirmwareRelease(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error)
+	CreateFirmwareValidation(ctx context.Context, validation *models.FirmwareReleaseValidation) error
+	ListValidFirmwareReleases(ctx context.Context, releaseType models.ReleaseType, activeOnly bool) ([]*models.FirmwareReleaseExtended, error)
+	GetFirmwareManifest(ctx context.Context, id uint) (*models.FirmwareManifest, error)
+	CreateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest, releases []*models.FirmwareReleaseExtended) error
+	UpdateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest) error
+}
+
+// OTARepository provides OTA-specific data access methods
+type OTARepository interface {
+	GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error)
+	CreateUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error
+	UpdateUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error
+	ListDeviceUpdateSessions(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error)
+	GetPendingUpdateSessions(ctx context.Context, deviceID uint) ([]*models.OTAUpdateSession, error)
+	GetUpdateBatch(ctx context.Context, batchID string) (*models.OTAUpdateBatch, error)
+	CreateUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error
+	UpdateUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error
+	ListBatchUpdateSessions(ctx context.Context, batchID string) ([]*models.OTAUpdateSession, error)
+	CreateDeviceLog(ctx context.Context, log *models.OTADeviceLog) error
+	GetStuckUpdateSessions(ctx context.Context, threshold time.Time) ([]*models.OTAUpdateSession, error)
+	GetUpdateStats(ctx context.Context) (map[string]interface{}, error)
 }
 
 // repo is an implementation of the Repository interface
@@ -86,11 +88,59 @@ type repo struct {
 	db database.DB
 }
 
+// Helper type for transaction support
+type dbWrapper struct {
+	db *gorm.DB
+}
+
+func (w *dbWrapper) DB() (*gorm.DB, error) {
+	return w.db, nil
+}
+
 // NewRepository creates a new repository instance
 func NewRepository(db database.DB) Repository {
 	return &repo{
 		db: db,
 	}
+}
+
+// firmwareRepo implements FirmwareRepository
+type firmwareRepo struct {
+	db database.DB
+}
+
+// NewFirmwareRepository creates a new firmware repository instance
+func NewFirmwareRepository(db database.DB) FirmwareRepository {
+	return &firmwareRepo{
+		db: db,
+	}
+}
+
+// otaRepo implements OTARepository
+type otaRepo struct {
+	db database.DB
+}
+
+// NewOTARepository creates a new OTA repository instance
+func NewOTARepository(db database.DB) OTARepository {
+	return &otaRepo{
+		db: db,
+	}
+}
+
+// WithTransaction executes the given function within a database transaction
+func (r *repo) WithTransaction(ctx context.Context, fn func(ctx context.Context, txRepo Repository) error) error {
+	gormDB, err := r.db.DB()
+	if err != nil {
+		return err
+	}
+	
+	return gormDB.Transaction(func(tx *gorm.DB) error {
+		txRepo := &repo{
+			db: &dbWrapper{db: tx},
+		}
+		return fn(ctx, txRepo)
+	})
 }
 
 // Device operations implementation

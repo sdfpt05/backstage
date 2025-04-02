@@ -48,14 +48,16 @@ type OTAService interface {
 
 // otaService implements OTAService
 type otaService struct {
-	repo          repository.Repository
-	otaRepo       repository.OTARepository
-	firmwareRepo  repository.FirmwareRepository
-	firmwareService FirmwareService
-	log           *logrus.Logger
-	chunkCache    map[string][]byte
-	cacheMutex    sync.RWMutex
-	maxCacheSize  int
+	repo             repository.Repository
+	otaRepo          repository.OTARepository
+	firmwareRepo     repository.FirmwareRepository
+	firmwareService  FirmwareService
+	log              *logrus.Logger
+	chunkCache       map[string][]byte
+	cacheMutex       sync.RWMutex
+	maxCacheSize     int
+	cacheCleaner     *time.Ticker
+	cacheStopChan    chan struct{}
 }
 
 // NewOTAService creates a new OTA service
@@ -66,16 +68,41 @@ func NewOTAService(
 	firmwareService FirmwareService,
 	log *logrus.Logger,
 ) OTAService {
-	return &otaService{
-		repo:           repo,
-		otaRepo:        otaRepo,
-		firmwareRepo:   firmwareRepo,
+	service := &otaService{
+		repo:            repo,
+		otaRepo:         otaRepo,
+		firmwareRepo:    firmwareRepo,
 		firmwareService: firmwareService,
-		log:            log,
-		chunkCache:     make(map[string][]byte),
-		cacheMutex:     sync.RWMutex{},
-		maxCacheSize:   1024 * 1024 * 10, // 10MB cache
+		log:             log,
+		chunkCache:      make(map[string][]byte),
+		cacheMutex:      sync.RWMutex{},
+		maxCacheSize:    1024 * 1024 * 10, // 10MB cache
+		cacheStopChan:   make(chan struct{}),
 	}
+	
+	// Start periodic cache cleanup
+	service.cacheCleaner = time.NewTicker(5 * time.Minute)
+	go service.cacheCleanupRoutine()
+	
+	return service
+}
+
+// cacheCleanupRoutine periodically cleans up the chunk cache
+func (s *otaService) cacheCleanupRoutine() {
+	for {
+		select {
+		case <-s.cacheCleaner.C:
+			s.cleanupCache()
+		case <-s.cacheStopChan:
+			s.cacheCleaner.Stop()
+			return
+		}
+	}
+}
+
+// Cleanup when service is stopped
+func (s *otaService) Cleanup() {
+	close(s.cacheStopChan)
 }
 
 // CreateUpdateSession creates a new update session for a device
@@ -98,7 +125,7 @@ func (s *otaService) CreateUpdateSession(
 		return nil, errors.New("device does not allow updates")
 	}
 	
-	// Validate firmware exists
+	// Validate firmware exists and get extended version
 	firmware, err := s.firmwareRepo.GetFirmwareReleaseByID(ctx, firmwareID)
 	if err != nil {
 		return nil, fmt.Errorf("firmware not found: %w", err)
@@ -116,15 +143,15 @@ func (s *otaService) CreateUpdateSession(
 	
 	// Create update session
 	session := &models.OTAUpdateSession{
-		SessionID:        uuid.New().String(),
-		DeviceID:         deviceID,
+		SessionID:         uuid.New().String(),
+		DeviceID:          deviceID,
 		FirmwareReleaseID: firmwareID,
-		Status:           models.OTAStatusScheduled,
-		ScheduledAt:      time.Now(),
-		Priority:         priority,
-		ForceUpdate:      forceUpdate,
-		AllowRollback:    allowRollback,
-		TotalBytes:       uint64(firmware.Size),
+		Status:            models.OTAStatusScheduled,
+		ScheduledAt:       time.Now(),
+		Priority:          priority,
+		ForceUpdate:       forceUpdate,
+		AllowRollback:     allowRollback,
+		TotalBytes:        uint64(firmware.Size),
 	}
 	
 	// Save to database
@@ -132,17 +159,32 @@ func (s *otaService) CreateUpdateSession(
 		return nil, fmt.Errorf("failed to create update session: %w", err)
 	}
 	
+	// Log the session creation
+	s.log.WithFields(logrus.Fields{
+		"session_id":  session.SessionID,
+		"device_id":   deviceID,
+		"firmware_id": firmwareID,
+	}).Info("Created update session")
+	
 	return session, nil
 }
 
 // GetUpdateSession gets an update session by ID
 func (s *otaService) GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error) {
-	return s.otaRepo.GetUpdateSession(ctx, sessionID)
+	session, err := s.otaRepo.GetUpdateSession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get update session: %w", err)
+	}
+	return session, nil
 }
 
 // ListDeviceUpdateSessions lists update sessions for a device
 func (s *otaService) ListDeviceUpdateSessions(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error) {
-	return s.otaRepo.ListDeviceUpdateSessions(ctx, deviceID, limit)
+	sessions, err := s.otaRepo.ListDeviceUpdateSessions(ctx, deviceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list device update sessions: %w", err)
+	}
+	return sessions, nil
 }
 
 // CancelUpdateSession cancels an update session
@@ -161,11 +203,30 @@ func (s *otaService) CancelUpdateSession(ctx context.Context, sessionID string) 
 	}
 	
 	// Update session status
+	prevStatus := session.Status
 	session.Status = models.OTAStatusCancelled
 	
 	// Save to database
 	if err := s.otaRepo.UpdateUpdateSession(ctx, session); err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
+	}
+	
+	// Add log entry
+	logEntry := &models.OTADeviceLog{
+		DeviceID:  session.DeviceID,
+		SessionID: session.SessionID,
+		EventType: "cancel",
+		LogLevel:  "info",
+		Message:   fmt.Sprintf("Session cancelled (previous status: %s)", prevStatus),
+	}
+	
+	if err := s.otaRepo.CreateDeviceLog(ctx, logEntry); err != nil {
+		s.log.WithError(err).Error("Failed to create device log entry")
+	}
+	
+	// Update batch statistics if this is part of a batch
+	if session.BatchID != "" {
+		s.updateBatchStatistics(ctx, session.BatchID)
 	}
 	
 	return nil
@@ -197,8 +258,15 @@ func (s *otaService) CreateUpdateBatch(
 		return nil, errors.New("firmware is not active")
 	}
 	
-	// Create batch
-	batchID := uuid.New().String()
+	// Validate maxConcurrent
+	if maxConcurrent == 0 {
+		maxConcurrent = 100 // Default value
+	}
+	
+	// Create batch with a more user-friendly ID format
+	timestamp := time.Now().Format("20060102-150405")
+	batchID := fmt.Sprintf("batch-%s-%s", timestamp, uuid.New().String()[:8])
+	
 	batch := &models.OTAUpdateBatch{
 		BatchID:           batchID,
 		FirmwareReleaseID: firmwareID,
@@ -213,34 +281,38 @@ func (s *otaService) CreateUpdateBatch(
 		MaxConcurrent:     maxConcurrent,
 	}
 	
+	// Create sessions for each device
+	sessions := make([]models.OTAUpdateSession, 0, len(deviceIDs))
+	for _, deviceID := range deviceIDs {
+		// Create session
+		session := models.OTAUpdateSession{
+			SessionID:         uuid.New().String(),
+			DeviceID:          deviceID,
+			FirmwareReleaseID: firmwareID,
+			Status:            models.OTAStatusScheduled,
+			ScheduledAt:       time.Now(),
+			Priority:          priority,
+			ForceUpdate:       forceUpdate,
+			AllowRollback:     allowRollback,
+			BatchID:           batchID,
+			TotalBytes:        uint64(firmware.Size),
+		}
+		sessions = append(sessions, session)
+	}
+	
+	// Attach sessions to batch
+	batch.Sessions = sessions
+	
 	// Save batch to database
 	if err := s.otaRepo.CreateUpdateBatch(ctx, batch); err != nil {
 		return nil, fmt.Errorf("failed to create update batch: %w", err)
 	}
 	
-	// Create sessions for each device
-	for _, deviceID := range deviceIDs {
-		// Create session
-		session := &models.OTAUpdateSession{
-			SessionID:        uuid.New().String(),
-			DeviceID:         deviceID,
-			FirmwareReleaseID: firmwareID,
-			Status:           models.OTAStatusScheduled,
-			ScheduledAt:      time.Now(),
-			Priority:         priority,
-			ForceUpdate:      forceUpdate,
-			AllowRollback:    allowRollback,
-			BatchID:          batchID,
-			TotalBytes:       uint64(firmware.Size),
-		}
-		
-		// Save session to database
-		if err := s.otaRepo.CreateUpdateSession(ctx, session); err != nil {
-			s.log.WithError(err).Errorf("Failed to create update session for device %d in batch %s", deviceID, batchID)
-			// Continue with other devices
-			continue
-		}
-	}
+	s.log.WithFields(logrus.Fields{
+		"batch_id":    batch.BatchID,
+		"firmware_id": firmwareID,
+		"device_count": len(deviceIDs),
+	}).Info("Created update batch")
 	
 	return batch, nil
 }
@@ -266,6 +338,7 @@ func (s *otaService) CancelUpdateBatch(ctx context.Context, batchID string) erro
 	}
 	
 	// Update batch status
+	prevStatus := batch.Status
 	batch.Status = models.OTAStatusCancelled
 	
 	// Save to database
@@ -280,6 +353,7 @@ func (s *otaService) CancelUpdateBatch(ctx context.Context, batchID string) erro
 		return nil
 	}
 	
+	cancelCount := 0
 	for _, session := range sessions {
 		// Only cancel sessions that are not already completed/failed/cancelled
 		if session.Status != models.OTAStatusCompleted && 
@@ -293,8 +367,29 @@ func (s *otaService) CancelUpdateBatch(ctx context.Context, batchID string) erro
 				// Continue with other sessions
 				continue
 			}
+			
+			// Add log entry
+			logEntry := &models.OTADeviceLog{
+				DeviceID:  session.DeviceID,
+				SessionID: session.SessionID,
+				EventType: "batch_cancel",
+				LogLevel:  "info",
+				Message:   fmt.Sprintf("Session cancelled as part of batch %s cancellation", batchID),
+			}
+			
+			if err := s.otaRepo.CreateDeviceLog(ctx, logEntry); err != nil {
+				s.log.WithError(err).Error("Failed to create device log entry")
+			}
+			
+			cancelCount++
 		}
 	}
+	
+	s.log.WithFields(logrus.Fields{
+		"batch_id":     batchID,
+		"prev_status":  prevStatus,
+		"cancel_count": cancelCount,
+	}).Info("Batch cancelled")
 	
 	return nil
 }
@@ -390,16 +485,16 @@ func (s *otaService) CheckForUpdate(ctx context.Context, deviceUID string, curre
 		// If newer version is available, create update session
 		if comp < 0 {
 			session := &models.OTAUpdateSession{
-				SessionID:        uuid.New().String(),
-				DeviceID:         device.ID,
+				SessionID:         uuid.New().String(),
+				DeviceID:          device.ID,
 				FirmwareReleaseID: latestFirmware.ID,
-				Status:           models.OTAStatusAcknowledged,
-				ScheduledAt:      time.Now(),
-				Priority:         5, // Default priority
-				ForceUpdate:      false,
-				AllowRollback:    true,
-				DeviceVersion:    currentVersion,
-				TotalBytes:       uint64(latestFirmware.Size),
+				Status:            models.OTAStatusAcknowledged,
+				ScheduledAt:       time.Now(),
+				Priority:          5, // Default priority
+				ForceUpdate:       false,
+				AllowRollback:     true,
+				DeviceVersion:     currentVersion,
+				TotalBytes:        uint64(latestFirmware.Size),
 			}
 			
 			now := time.Now()
@@ -539,6 +634,11 @@ func (s *otaService) GetUpdateChunk(ctx context.Context, sessionID string, offse
 		return cachedChunk, nil
 	}
 	
+	// Verify file exists
+	if _, err := os.Stat(release.FilePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("firmware file not found: %w", err)
+	}
+	
 	// Open the file
 	file, err := os.Open(release.FilePath)
 	if err != nil {
@@ -592,7 +692,8 @@ func (s *otaService) GetUpdateChunk(ctx context.Context, sessionID string, offse
 	}
 	
 	// Add log entry every 10 chunks to avoid spamming the logs
-	if session.ChunksReceived%10 == 0 || session.ChunksReceived == 1 {
+	if session.ChunksReceived == 1 || session.ChunksReceived%10 == 0 || 
+	   (session.ChunksTotal > 0 && session.ChunksReceived == session.ChunksTotal) {
 		percentComplete := float64(session.BytesDownloaded) / float64(session.TotalBytes) * 100.0
 		
 		logEntry := &models.OTADeviceLog{
@@ -611,17 +712,12 @@ func (s *otaService) GetUpdateChunk(ctx context.Context, sessionID string, offse
 	
 	// Cache the chunk for future requests
 	s.cacheMutex.Lock()
-	// First, check if we need to make room in the cache
-	for s.cacheSize() > s.maxCacheSize {
-		// Remove a random entry
-		for k := range s.chunkCache {
-			delete(s.chunkCache, k)
-			break
-		}
-	}
-	
-	// Add to cache
 	s.chunkCache[cacheKey] = chunk
+	
+	// Check if we need to clean up cache if it's too large
+	if s.cacheSize() > s.maxCacheSize {
+		s.removeOldestCacheEntries(10) // Remove 10 entries to make room
+	}
 	s.cacheMutex.Unlock()
 	
 	// Update batch statistics if this is part of a batch
@@ -655,8 +751,10 @@ func (s *otaService) CompleteDownload(ctx context.Context, sessionID string, che
 	}
 	
 	// Verify checksum if provided
+	checksumValid := true
 	if checksum != "" {
-		if checksum != release.FileHash {
+		checksumValid = checksum == release.FileHash
+		if !checksumValid {
 			// Log the checksum mismatch but continue since device may have calculated it differently
 			s.log.Warnf("Checksum mismatch for session %s: got %s, expected %s", sessionID, checksum, release.FileHash)
 			
@@ -694,8 +792,9 @@ func (s *otaService) CompleteDownload(ctx context.Context, sessionID string, che
 		SessionID:  session.SessionID,
 		EventType:  "download_complete",
 		LogLevel:   "info",
-		Message:    "Device completed firmware download",
-		Metadata:   fmt.Sprintf(`{"total_bytes":%d,"download_time_sec":%.1f}`, session.BytesDownloaded, now.Sub(*session.DownloadStartedAt).Seconds()),
+		Message:    fmt.Sprintf("Device completed firmware download (checksum valid: %v)", checksumValid),
+		Metadata:   fmt.Sprintf(`{"total_bytes":%d,"download_time_sec":%.1f,"checksum_valid":%v}`, 
+			session.BytesDownloaded, now.Sub(*session.DownloadStartedAt).Seconds(), checksumValid),
 	}
 	
 	if err := s.otaRepo.CreateDeviceLog(ctx, logEntry); err != nil {
@@ -850,7 +949,12 @@ func (s *otaService) GetStuckUpdates(ctx context.Context, thresholdMinutes int) 
 	threshold := time.Now().Add(-time.Duration(thresholdMinutes) * time.Minute)
 	
 	// Get stuck sessions from repository
-	return s.otaRepo.GetStuckUpdateSessions(ctx, threshold)
+	sessions, err := s.otaRepo.GetStuckUpdateSessions(ctx, threshold)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stuck update sessions: %w", err)
+	}
+	
+	return sessions, nil
 }
 
 // RetryFailedUpdate retries a failed update
@@ -873,18 +977,18 @@ func (s *otaService) RetryFailedUpdate(ctx context.Context, sessionID string) (*
 	
 	// Create a new session for retry
 	retrySession := &models.OTAUpdateSession{
-		SessionID:        uuid.New().String(),
-		DeviceID:         session.DeviceID,
+		SessionID:         uuid.New().String(),
+		DeviceID:          session.DeviceID,
 		FirmwareReleaseID: session.FirmwareReleaseID,
-		Status:           models.OTAStatusScheduled,
-		ScheduledAt:      time.Now(),
-		Priority:         session.Priority,
-		ForceUpdate:      session.ForceUpdate,
-		AllowRollback:    session.AllowRollback,
-		BatchID:          session.BatchID,
-		TotalBytes:       session.TotalBytes,
-		RetryCount:       session.RetryCount + 1,
-		MaxRetries:       session.MaxRetries,
+		Status:            models.OTAStatusScheduled,
+		ScheduledAt:       time.Now(),
+		Priority:          session.Priority,
+		ForceUpdate:       session.ForceUpdate,
+		AllowRollback:     session.AllowRollback,
+		BatchID:           session.BatchID,
+		TotalBytes:        session.TotalBytes,
+		RetryCount:        session.RetryCount + 1,
+		MaxRetries:        session.MaxRetries,
 	}
 	
 	// Save to database
@@ -916,7 +1020,19 @@ func (s *otaService) RetryFailedUpdate(ctx context.Context, sessionID string) (*
 // GetUpdateStats gets statistics about updates
 func (s *otaService) GetUpdateStats(ctx context.Context) (map[string]interface{}, error) {
 	// Get statistics from repository
-	return s.otaRepo.GetUpdateStats(ctx)
+	stats, err := s.otaRepo.GetUpdateStats(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get update statistics: %w", err)
+	}
+	
+	// Add cache stats
+	s.cacheMutex.RLock()
+	stats["cache_size_bytes"] = s.cacheSize()
+	stats["cache_entries"] = len(s.chunkCache)
+	stats["cache_max_size"] = s.maxCacheSize
+	s.cacheMutex.RUnlock()
+	
+	return stats, nil
 }
 
 // Helper functions
@@ -985,4 +1101,36 @@ func (s *otaService) cacheSize() int {
 		size += len(chunk)
 	}
 	return size
+}
+
+// cleanupCache cleans up the chunk cache
+func (s *otaService) cleanupCache() {
+	s.cacheMutex.Lock()
+	defer s.cacheMutex.Unlock()
+	
+	// If cache is below 80% of max size, do nothing
+	if s.cacheSize() <= int(float64(s.maxCacheSize)*0.8) {
+		return
+	}
+	
+	// Remove older entries until we're below threshold
+	s.removeOldestCacheEntries(len(s.chunkCache) / 4) // Remove 25% of entries
+}
+
+// removeOldestCacheEntries removes the oldest entries from the cache
+// Must be called with cacheMutex locked
+func (s *otaService) removeOldestCacheEntries(count int) {
+	// Simple implementation: just remove random entries
+	// In a production system, you'd want to track entry age and remove oldest
+	removed := 0
+	for k := range s.chunkCache {
+		delete(s.chunkCache, k)
+		removed++
+		
+		if removed >= count {
+			break
+		}
+	}
+	
+	s.log.Debugf("Removed %d entries from chunk cache", removed)
 }
