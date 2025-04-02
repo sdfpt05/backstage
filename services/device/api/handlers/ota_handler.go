@@ -1,21 +1,19 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
-	
+
 	"example.com/backstage/services/device/internal/models"
 	"example.com/backstage/services/device/internal/service"
-	
+
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 // OTAHandler handles over-the-air update operations
@@ -35,14 +33,14 @@ func NewOTAHandler(svc service.Service, log *logrus.Logger) *OTAHandler {
 // CreateUpdateSession creates a new OTA update session for a device
 func (h *OTAHandler) CreateUpdateSession(c *gin.Context) {
 	var request struct {
-		DeviceID        uint   `json:"device_id" binding:"required"`
-		FirmwareID      uint   `json:"firmware_id" binding:"required"`
-		ScheduledAt     string `json:"scheduled_at"`
-		Priority        uint   `json:"priority"`
-		ForceUpdate     bool   `json:"force_update"`
-		AllowRollback   bool   `json:"allow_rollback"`
+		DeviceID      uint   `json:"device_id" binding:"required"`
+		FirmwareID    uint   `json:"firmware_id" binding:"required"`
+		ScheduledAt   string `json:"scheduled_at"`
+		Priority      uint   `json:"priority"`
+		ForceUpdate   bool   `json:"force_update"`
+		AllowRollback bool   `json:"allow_rollback"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&request); err != nil {
 		h.log.WithError(err).Warn("Invalid update session format")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -50,7 +48,7 @@ func (h *OTAHandler) CreateUpdateSession(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Parse scheduled time if provided, otherwise use current time
 	var scheduledAt time.Time
 	if request.ScheduledAt != "" {
@@ -66,49 +64,50 @@ func (h *OTAHandler) CreateUpdateSession(c *gin.Context) {
 	} else {
 		scheduledAt = time.Now()
 	}
-	
+
 	// Set default priority if not provided
 	if request.Priority == 0 {
 		request.Priority = 5 // Default priority (1-10, 1 being highest)
 	}
-	
+
 	// Create the session
 	session := &models.OTAUpdateSession{
-		SessionID:          uuid.New().String(),
-		DeviceID:           request.DeviceID,
-		FirmwareReleaseID:  request.FirmwareID,
-		Status:             models.OTAStatusScheduled,
-		ScheduledAt:        scheduledAt,
-		Priority:           request.Priority,
-		ForceUpdate:        request.ForceUpdate,
-		AllowRollback:      request.AllowRollback,
+		SessionID:         uuid.New().String(),
+		DeviceID:          request.DeviceID,
+		FirmwareReleaseID: request.FirmwareID,
+		Status:            models.OTAStatusScheduled,
+		ScheduledAt:       scheduledAt,
+		Priority:          request.Priority,
+		ForceUpdate:       request.ForceUpdate,
+		AllowRollback:     request.AllowRollback,
 	}
-	
-	if err := h.service.CreateOTAUpdateSession(c, session); err != nil {
+
+	updatedSession, err := h.service.CreateUpdateSession(c, session.DeviceID, session.FirmwareReleaseID, session.Priority, session.ForceUpdate, session.AllowRollback)
+	if err != nil {
 		h.log.WithError(err).Error("Failed to create update session")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to create update session",
 		})
 		return
 	}
-	
-	c.JSON(http.StatusCreated, session)
+
+	c.JSON(http.StatusCreated, updatedSession)
 }
 
 // CreateBatchUpdate creates update sessions for multiple devices
 func (h *OTAHandler) CreateBatchUpdate(c *gin.Context) {
 	var request struct {
-		DeviceIDs       []uint `json:"device_ids" binding:"required"`
-		FirmwareID      uint   `json:"firmware_id" binding:"required"`
-		ScheduledAt     string `json:"scheduled_at"`
-		Priority        uint   `json:"priority"`
-		ForceUpdate     bool   `json:"force_update"`
-		AllowRollback   bool   `json:"allow_rollback"`
-		MaxConcurrent   uint   `json:"max_concurrent"`
-		Notes           string `json:"notes"`
-		OrganizationID  *uint  `json:"organization_id"`
+		DeviceIDs      []uint `json:"device_ids" binding:"required"`
+		FirmwareID     uint   `json:"firmware_id" binding:"required"`
+		ScheduledAt    string `json:"scheduled_at"`
+		Priority       uint   `json:"priority"`
+		ForceUpdate    bool   `json:"force_update"`
+		AllowRollback  bool   `json:"allow_rollback"`
+		MaxConcurrent  uint   `json:"max_concurrent"`
+		Notes          string `json:"notes"`
+		OrganizationID *uint  `json:"organization_id"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&request); err != nil {
 		h.log.WithError(err).Warn("Invalid batch update format")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -116,7 +115,7 @@ func (h *OTAHandler) CreateBatchUpdate(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Parse scheduled time if provided, otherwise use current time
 	var scheduledAt time.Time
 	if request.ScheduledAt != "" {
@@ -132,16 +131,16 @@ func (h *OTAHandler) CreateBatchUpdate(c *gin.Context) {
 	} else {
 		scheduledAt = time.Now()
 	}
-	
+
 	// Set default values if not provided
 	if request.Priority == 0 {
 		request.Priority = 5
 	}
-	
+
 	if request.MaxConcurrent == 0 {
 		request.MaxConcurrent = 100
 	}
-	
+
 	batch := &models.OTAUpdateBatch{
 		BatchID:           uuid.New().String(),
 		FirmwareReleaseID: request.FirmwareID,
@@ -157,9 +156,9 @@ func (h *OTAHandler) CreateBatchUpdate(c *gin.Context) {
 		OrganizationID:    request.OrganizationID,
 		MaxConcurrent:     request.MaxConcurrent,
 	}
-	
+
 	// Create the batch update
-	result, err := h.service.CreateOTAUpdateBatch(c, batch, request.DeviceIDs)
+	result, err := h.service.CreateUpdateBatch(c, batch.FirmwareReleaseID, request.DeviceIDs, batch.Priority, batch.ForceUpdate, batch.AllowRollback, batch.MaxConcurrent)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to create batch update")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -167,7 +166,7 @@ func (h *OTAHandler) CreateBatchUpdate(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusCreated, result)
 }
 
@@ -180,20 +179,24 @@ func (h *OTAHandler) DeviceCheckUpdate(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Get current version from query parameters
 	currentVersion := c.DefaultQuery("version", "")
-	
+
 	// Check for available updates
-	update, err := h.service.CheckDeviceUpdate(c, deviceUID, currentVersion)
+	update, err := h.service.CheckForUpdate(c, deviceUID, currentVersion)
 	if err != nil {
-		h.log.WithError(err).Error("Failed to check for updates")
+		h.log.WithFields(logrus.Fields{
+			"device_uid":      deviceUID,
+			"current_version": currentVersion,
+			"error":           err.Error(),
+		}).Error("Failed to check for updates")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to check for updates",
 		})
 		return
 	}
-	
+
 	if update == nil {
 		// No update available
 		c.JSON(http.StatusOK, gin.H{
@@ -201,7 +204,7 @@ func (h *OTAHandler) DeviceCheckUpdate(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Update available
 	c.JSON(http.StatusOK, gin.H{
 		"update_available": true,
@@ -223,12 +226,12 @@ func (h *OTAHandler) AcknowledgeUpdate(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	var request struct {
 		DeviceVersion string `json:"device_version"`
 		Accept        bool   `json:"accept"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&request); err != nil {
 		h.log.WithError(err).Warn("Invalid acknowledgment format")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -236,16 +239,16 @@ func (h *OTAHandler) AcknowledgeUpdate(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Update session status
-	if err := h.service.AcknowledgeUpdate(c, sessionID, request.DeviceVersion, request.Accept); err != nil {
+	if err := h.service.AcknowledgeUpdate(c, sessionID); err != nil {
 		h.log.WithError(err).Error("Failed to acknowledge update")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to acknowledge update",
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"id":     sessionID,
@@ -261,11 +264,11 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Get chunk information from query parameters
 	chunkIndexStr := c.DefaultQuery("chunk", "0")
 	chunkSizeStr := c.DefaultQuery("size", "32768") // Default 32KB
-	
+
 	chunkIndex, err := strconv.Atoi(chunkIndexStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -273,7 +276,7 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	chunkSize, err := strconv.Atoi(chunkSizeStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -281,32 +284,32 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Limit chunk size to prevent excessive resource usage
 	if chunkSize > 1024*1024 {
 		chunkSize = 1024 * 1024 // Max 1MB per chunk
 	}
-	
+
 	// Get session and firmware information
-	session, err := h.service.GetOTAUpdateSession(c, sessionID)
+	session, err := h.service.GetUpdateSession(c, sessionID)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to get update session")
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Update session not found",
+			"error": "Session not found",
 		})
 		return
 	}
-	
+
 	// Validate session status
-	if session.Status != models.OTAStatusAcknowledged && 
-	   session.Status != models.OTAStatusDownloading {
+	if session.Status != models.OTAStatusAcknowledged &&
+		session.Status != models.OTAStatusDownloading {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Update not in valid state for download",
+			"error":  "Update not in valid state for download",
 			"status": string(session.Status),
 		})
 		return
 	}
-	
+
 	// Get firmware file
 	firmware, err := h.service.GetFirmwareRelease(c, session.FirmwareReleaseID)
 	if err != nil {
@@ -316,7 +319,7 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Open the firmware file
 	file, err := os.Open(firmware.FilePath)
 	if err != nil {
@@ -327,7 +330,7 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	
+
 	// Get file info
 	fileInfo, err := file.Stat()
 	if err != nil {
@@ -337,29 +340,29 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Calculate total chunks
 	totalSize := fileInfo.Size()
 	totalChunks := (int(totalSize) + chunkSize - 1) / chunkSize
-	
+
 	// Validate chunk index
 	if chunkIndex >= totalChunks {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Chunk index out of range",
+			"error":        "Chunk index out of range",
 			"total_chunks": totalChunks,
 		})
 		return
 	}
-	
+
 	// Calculate offset and read size
 	offset := int64(chunkIndex * chunkSize)
 	readSize := chunkSize
-	
+
 	// Adjust read size for the last chunk
 	if offset+int64(readSize) > totalSize {
 		readSize = int(totalSize - offset)
 	}
-	
+
 	// Seek to the correct position
 	_, err = file.Seek(offset, io.SeekStart)
 	if err != nil {
@@ -369,7 +372,7 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	 
+
 	// Buffer for the chunk
 	buffer := make([]byte, readSize)
 	bytesRead, err := file.Read(buffer)
@@ -380,33 +383,29 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 		})
 		return
 	}
-	
-	// Update session stats
+
+	// During the streaming, update progress in a separate goroutine
 	go func() {
-		// Use a new context since the request context will be cancelled
-		ctx := context.Background()
-		
-		// If this is the first chunk, update status
+		// Log download start for the first chunk
 		if chunkIndex == 0 {
-			if err := h.service.UpdateOTASessionStatus(ctx, sessionID, models.OTAStatusDownloading); err != nil {
-				h.log.WithError(err).Error("Failed to update session status")
-			}
+			h.log.WithFields(logrus.Fields{
+				"session_id": sessionID,
+				"total_size": totalSize,
+				"chunks":     totalChunks,
+			}).Info("Started firmware download")
 		}
-		
-		// Calculate download progress
-		bytesDownloaded := int64(chunkIndex * chunkSize)
-		if chunkIndex == totalChunks-1 {
-			bytesDownloaded = totalSize
-		} else {
-			bytesDownloaded += int64(bytesRead)
-		}
-		
-		// Update session with download progress
-		if err := h.service.UpdateOTADownloadProgress(ctx, sessionID, uint64(bytesDownloaded), uint(chunkIndex), uint(totalChunks)); err != nil {
-			h.log.WithError(err).Error("Failed to update download progress")
+
+		// Log progress for large downloads (every 10%)
+		if totalChunks > 10 && chunkIndex%(totalChunks/10) == 0 {
+			percentage := (float64(chunkIndex) / float64(totalChunks)) * 100
+			h.log.WithFields(logrus.Fields{
+				"session_id":  sessionID,
+				"progress":    fmt.Sprintf("%.1f%%", percentage),
+				"chunk_index": chunkIndex,
+			}).Info("Download progress")
 		}
 	}()
-	
+
 	// Set response headers
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Length", fmt.Sprintf("%d", bytesRead))
@@ -414,7 +413,7 @@ func (h *OTAHandler) ChunkedDownload(c *gin.Context) {
 	c.Header("X-Total-Chunks", fmt.Sprintf("%d", totalChunks))
 	c.Header("X-Chunk-Size", fmt.Sprintf("%d", bytesRead))
 	c.Header("X-Total-Size", fmt.Sprintf("%d", totalSize))
-	
+
 	// Send the chunk data
 	c.Data(http.StatusOK, "application/octet-stream", buffer[:bytesRead])
 }
@@ -428,11 +427,11 @@ func (h *OTAHandler) DownloadComplete(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	var request struct {
 		Checksum string `json:"checksum"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&request); err != nil {
 		h.log.WithError(err).Warn("Invalid download complete format")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -440,16 +439,16 @@ func (h *OTAHandler) DownloadComplete(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Update session status and verify checksum
-	if err := h.service.CompleteOTADownload(c, sessionID, request.Checksum); err != nil {
+	if err := h.service.CompleteDownload(c, sessionID, request.Checksum); err != nil {
 		h.log.WithError(err).Error("Failed to complete download")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Failed to complete download: %v", err),
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"id":     sessionID,
@@ -465,13 +464,13 @@ func (h *OTAHandler) FlashComplete(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	var request struct {
 		Success      bool   `json:"success"`
 		ErrorMessage string `json:"error_message"`
 		NewVersion   string `json:"new_version"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&request); err != nil {
 		h.log.WithError(err).Warn("Invalid flash complete format")
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -479,16 +478,16 @@ func (h *OTAHandler) FlashComplete(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Update session status
-	if err := h.service.CompleteOTAFlash(c, sessionID, request.Success, request.ErrorMessage, request.NewVersion); err != nil {
+	if err := h.service.CompleteUpdate(c, sessionID, request.Success, request.ErrorMessage); err != nil {
 		h.log.WithError(err).Error("Failed to complete flash")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Failed to complete flash: %v", err),
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"id":     sessionID,
@@ -504,36 +503,48 @@ func (h *OTAHandler) GetUpdateSession(c *gin.Context) {
 		})
 		return
 	}
-	
-	session, err := h.service.GetOTAUpdateSession(c, sessionID)
+
+	session, err := h.service.GetUpdateSession(c, sessionID)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to get update session")
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Update session not found",
+			"error": "Session not found",
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, session)
 }
 
 // ListUpdateSessions lists all update sessions with filtering options
 func (h *OTAHandler) ListUpdateSessions(c *gin.Context) {
-	// Get filter parameters
-	deviceIDStr := c.DefaultQuery("device_id", "")
-	batchID := c.DefaultQuery("batch_id", "")
-	status := c.DefaultQuery("status", "")
-	
-	var deviceID *uint
-	if deviceIDStr != "" {
-		id, err := strconv.ParseUint(deviceIDStr, 10, 64)
-		if err == nil {
-			uintID := uint(id)
-			deviceID = &uintID
+	// Filter parameters
+	deviceID := c.Query("device_id")
+	var deviceIDPtr *uint
+
+	if deviceID != "" {
+		id, err := strconv.ParseUint(deviceID, 10, 32)
+		if err != nil {
+			h.log.WithError(err).Warn("Invalid device ID format")
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid device ID format",
+			})
+			return
 		}
+		idUint := uint(id)
+		deviceIDPtr = &idUint
 	}
-	
-	sessions, err := h.service.ListOTAUpdateSessions(c, deviceID, batchID, models.OTAUpdateStatus(status))
+
+	// Note: batchID and status parameters are currently not used with the service interface
+	// and would need to be implemented in a future update
+
+	// Convert optional deviceID to uint
+	var deviceIDUint uint
+	if deviceIDPtr != nil {
+		deviceIDUint = *deviceIDPtr
+	}
+
+	sessions, err := h.service.ListDeviceUpdateSessions(c, deviceIDUint, 100) // Use a reasonable limit
 	if err != nil {
 		h.log.WithError(err).Error("Failed to list update sessions")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -541,7 +552,7 @@ func (h *OTAHandler) ListUpdateSessions(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, sessions)
 }
 
@@ -554,15 +565,15 @@ func (h *OTAHandler) CancelUpdateSession(c *gin.Context) {
 		})
 		return
 	}
-	
-	if err := h.service.CancelOTAUpdateSession(c, sessionID); err != nil {
+
+	if err := h.service.CancelUpdateSession(c, sessionID); err != nil {
 		h.log.WithError(err).Error("Failed to cancel update session")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Failed to cancel update session: %v", err),
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"id":     sessionID,

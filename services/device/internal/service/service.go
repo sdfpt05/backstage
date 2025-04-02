@@ -8,13 +8,12 @@ import (
 	"io"
 	"runtime"
 	"time"
-	
+
 	"example.com/backstage/services/device/internal/cache"
-	"example.com/backstage/services/device/internal/database"
 	"example.com/backstage/services/device/internal/messaging"
 	"example.com/backstage/services/device/internal/models"
 	"example.com/backstage/services/device/internal/repository"
-	
+
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -28,23 +27,23 @@ type Service interface {
 	ListDevices(ctx context.Context, orgID uint) ([]*models.Device, error)
 	UpdateDeviceStatus(ctx context.Context, id uint, active bool) error
 	AssignFirmwareToDevice(ctx context.Context, deviceID, releaseID uint) error
-	
+
 	// DeviceMessage operations
 	ProcessDeviceMessage(ctx context.Context, message *models.DeviceMessage) error
 	GetDeviceMessages(ctx context.Context, deviceID uint, limit int) ([]*models.DeviceMessage, error)
-	
+
 	// Organization operations
 	CreateOrganization(ctx context.Context, org *models.Organization) error
 	UpdateOrganization(ctx context.Context, org *models.Organization) error
 	GetOrganization(ctx context.Context, id uint) (*models.Organization, error)
 	ListOrganizations(ctx context.Context) ([]*models.Organization, error)
-	
+
 	// FirmwareRelease operations
 	CreateFirmwareRelease(ctx context.Context, release *models.FirmwareRelease) error
 	GetFirmwareRelease(ctx context.Context, id uint) (*models.FirmwareRelease, error)
 	ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareRelease, error)
 	ActivateFirmwareRelease(ctx context.Context, id uint) error
-	
+
 	// Enhanced operations for batch processing and monitoring
 	BatchProcessMessages(ctx context.Context, messages []*models.DeviceMessage) error
 	GetProcessorStats() map[string]interface{}
@@ -83,7 +82,7 @@ type service struct {
 	messagingClient messaging.ServiceBusClient
 	log             *logrus.Logger
 	msgProcessor    *MessageProcessor
-	
+
 	// Added Services
 	firmwareService FirmwareService
 	otaService      OTAService
@@ -122,7 +121,7 @@ func NewService(config ServiceConfig) (Service, error) {
 	if workerCount < 4 {
 		workerCount = 4 // Minimum 4 workers
 	}
-	
+
 	// Create message processor for asynchronous processing
 	msgProcessor := NewMessageProcessor(
 		config.Repository,
@@ -131,19 +130,17 @@ func NewService(config ServiceConfig) (Service, error) {
 		config.Logger,
 		workerCount,
 	)
-	
+
 	// Extract the DB connection for specialized repositories
-	var db database.DB
-	if repoImpl, ok := config.Repository.(*repository.repo); ok {
-		db = repoImpl.db
-	} else {
-		return nil, errors.New("unable to get database connection from repository")
+	db, err := config.Repository.GetDB()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get database connection: %w", err)
 	}
-	
+
 	// Create specialized repositories
 	firmwareRepo := repository.NewFirmwareRepository(db)
 	otaRepo := repository.NewOTARepository(db)
-	
+
 	// Create firmware service
 	firmwareService, err := NewFirmwareService(
 		config.Repository,
@@ -154,7 +151,7 @@ func NewService(config ServiceConfig) (Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create firmware service: %w", err)
 	}
-	
+
 	// Create OTA service
 	otaService := NewOTAService(
 		config.Repository,
@@ -163,7 +160,7 @@ func NewService(config ServiceConfig) (Service, error) {
 		firmwareService,
 		config.Logger,
 	)
-	
+
 	return &service{
 		repo:            config.Repository,
 		cache:           config.Cache,
@@ -177,7 +174,7 @@ func NewService(config ServiceConfig) (Service, error) {
 
 // Legacy constructor for backward compatibility
 func NewServiceLegacy(
-	repo repository.Repository, 
+	repo repository.Repository,
 	cache cache.RedisClient,
 	messagingClient messaging.ServiceBusClient,
 	log *logrus.Logger,
@@ -193,25 +190,44 @@ func NewServiceLegacy(
 
 // Device operations implementation
 func (s *service) RegisterDevice(ctx context.Context, device *models.Device) error {
+	// Validate required fields
+	if device == nil {
+		return errors.New("device cannot be nil")
+	}
+
 	// Generate UUID if not provided
 	if device.UID == "" {
 		device.UID = uuid.New().String()
 	}
-	
+
+	// Validate device UID format
+	if len(device.UID) < 5 || len(device.UID) > 100 {
+		return errors.New("device UID must be between 5 and 100 characters")
+	}
+
+	// Check if device with same UID already exists
+	existingDevice, err := s.repo.FindDeviceByUID(ctx, device.UID)
+	if err == nil && existingDevice != nil {
+		return fmt.Errorf("device with UID %s already exists", device.UID)
+	}
+
 	// Set default values
 	device.Active = true
 	device.AllowUpdates = true
-	
+
+	// Create a files directory for the device
+	device.FilesPath = fmt.Sprintf("/var/device_files/%s", device.UID)
+
 	if err := s.repo.CreateDevice(ctx, device); err != nil {
 		return fmt.Errorf("failed to create device: %w", err)
 	}
-	
+
 	// Cache the device info
 	deviceJSON, err := json.Marshal(device)
 	if err == nil {
 		s.cache.Set(ctx, fmt.Sprintf("device:%s", device.UID), string(deviceJSON), 24*time.Hour)
 	}
-	
+
 	return nil
 }
 
@@ -221,13 +237,13 @@ func (s *service) GetDevice(ctx context.Context, id uint) (*models.Device, error
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Update cache
 	deviceJSON, err := json.Marshal(device)
 	if err == nil {
 		s.cache.Set(ctx, fmt.Sprintf("device:%s", device.UID), string(deviceJSON), 24*time.Hour)
 	}
-	
+
 	return device, nil
 }
 
@@ -241,19 +257,19 @@ func (s *service) GetDeviceByUID(ctx context.Context, uid string) (*models.Devic
 			return &device, nil
 		}
 	}
-	
+
 	// Fallback to database
 	device, err := s.repo.FindDeviceByUID(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Update cache
 	deviceJSON, err := json.Marshal(device)
 	if err == nil {
 		s.cache.Set(ctx, cacheKey, string(deviceJSON), 24*time.Hour)
 	}
-	
+
 	return device, nil
 }
 
@@ -266,19 +282,19 @@ func (s *service) UpdateDeviceStatus(ctx context.Context, id uint, active bool) 
 	if err != nil {
 		return err
 	}
-	
+
 	device.Active = active
-	
+
 	if err := s.repo.UpdateDevice(ctx, device); err != nil {
 		return err
 	}
-	
+
 	// Update cache
 	deviceJSON, err := json.Marshal(device)
 	if err == nil {
 		s.cache.Set(ctx, fmt.Sprintf("device:%s", device.UID), string(deviceJSON), 24*time.Hour)
 	}
-	
+
 	return nil
 }
 
@@ -287,30 +303,30 @@ func (s *service) AssignFirmwareToDevice(ctx context.Context, deviceID, releaseI
 	if err != nil {
 		return err
 	}
-	
+
 	release, err := s.repo.FindFirmwareReleaseByID(ctx, releaseID)
 	if err != nil {
 		return err
 	}
-	
+
 	// Check if release is active
 	if !release.Active {
 		return fmt.Errorf("cannot assign inactive firmware release")
 	}
-	
+
 	// Assign the release to the device
 	device.CurrentReleaseID = &release.ID
-	
+
 	if err := s.repo.UpdateDevice(ctx, device); err != nil {
 		return err
 	}
-	
+
 	// Update cache
 	deviceJSON, err := json.Marshal(device)
 	if err == nil {
 		s.cache.Set(ctx, fmt.Sprintf("device:%s", device.UID), string(deviceJSON), 24*time.Hour)
 	}
-	
+
 	return nil
 }
 
@@ -321,7 +337,7 @@ func (s *service) ProcessDeviceMessage(ctx context.Context, message *models.Devi
 	if message.UUID == "" {
 		message.UUID = uuid.New().String()
 	}
-	
+
 	// Use the message processor for asynchronous processing
 	return s.msgProcessor.EnqueueMessage(message)
 }
@@ -331,21 +347,21 @@ func (s *service) BatchProcessMessages(ctx context.Context, messages []*models.D
 	if len(messages) == 0 {
 		return nil
 	}
-	
+
 	s.log.Infof("Processing batch of %d messages", len(messages))
-	
+
 	// Enqueue each message for processing
 	for i, msg := range messages {
 		if msg.UUID == "" {
 			msg.UUID = uuid.New().String()
 		}
-		
+
 		if err := s.msgProcessor.EnqueueMessage(msg); err != nil {
 			s.log.WithError(err).Errorf("Failed to enqueue message %d/%d", i+1, len(messages))
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -370,7 +386,7 @@ func (s *service) GetDeviceMessages(ctx context.Context, deviceID uint, limit in
 func (s *service) CreateOrganization(ctx context.Context, org *models.Organization) error {
 	// Set default values
 	org.Active = true
-	
+
 	return s.repo.CreateOrganization(ctx, org)
 }
 
@@ -393,16 +409,16 @@ func (s *service) CreateFirmwareRelease(ctx context.Context, release *models.Fir
 	if release.ReleaseType == "" {
 		release.ReleaseType = models.ReleaseTypeDevelopment
 	}
-	
+
 	// Validate the release
 	if release.FilePath == "" {
 		return fmt.Errorf("file path is required")
 	}
-	
+
 	if release.Version == "" {
 		return fmt.Errorf("version is required")
 	}
-	
+
 	// Create the release
 	return s.repo.CreateFirmwareRelease(ctx, release)
 }
@@ -420,27 +436,41 @@ func (s *service) ActivateFirmwareRelease(ctx context.Context, id uint) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Check if the release can be activated
 	if !release.Valid {
 		return fmt.Errorf("cannot activate invalid release")
 	}
-	
+
 	if release.IsTest && !release.TestPassed {
 		return fmt.Errorf("cannot activate test release that has not passed testing")
 	}
-	
+
 	// Activate the release
 	release.Active = true
-	
+
 	return s.repo.UpdateFirmwareRelease(ctx, release)
 }
 
 // OTA Update Service methods - delegated to otaService
+// CreateUpdateSession creates a new OTA update session for a device.
+// It validates that the device and firmware exist and are valid,
+// creates a session record, and returns the created session.
+// Parameters:
+// - ctx: Context for the operation
+// - deviceID: ID of the device to update
+// - firmwareID: ID of the firmware to install
+// - priority: Priority of the update (lower number = higher priority)
+// - forceUpdate: Override device updates disabled setting
+// - allowRollback: Allow rollback to previous version if update fails
 func (s *service) CreateUpdateSession(ctx context.Context, deviceID, firmwareID uint, priority uint, forceUpdate, allowRollback bool) (*models.OTAUpdateSession, error) {
 	return s.otaService.CreateUpdateSession(ctx, deviceID, firmwareID, priority, forceUpdate, allowRollback)
 }
 
+// GetUpdateSession retrieves information about an existing update session.
+// Parameters:
+// - ctx: Context for the operation
+// - sessionID: Unique identifier for the session
 func (s *service) GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error) {
 	return s.otaService.GetUpdateSession(ctx, sessionID)
 }
