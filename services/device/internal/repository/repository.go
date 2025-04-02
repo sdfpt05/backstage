@@ -97,6 +97,10 @@ func (w *dbWrapper) DB() (*gorm.DB, error) {
 	return w.db, nil
 }
 
+func (w *dbWrapper) Close() error {
+    return nil
+}
+
 // NewRepository creates a new repository instance
 func NewRepository(db database.DB) Repository {
 	return &repo{
@@ -480,3 +484,4 @@ func (r *repo) DeleteAPIKey(ctx context.Context, id uint) error {
 	
 	return gormDB.Delete(&models.APIKey{}, id).Error
 }
+

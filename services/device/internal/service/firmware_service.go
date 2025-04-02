@@ -780,6 +780,7 @@ func (s *firmwareService) verifySignature(release *models.FirmwareReleaseExtende
 	
 	// Verify the signature
 	return ecdsa.Verify(publicKey, hash[:], r, s)
+
 }
 
 // compareSemanticVersions compares two semantic versions

@@ -60,12 +60,12 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("version", "v", false, "display version information")
 
 	// Handle version flag if present
-	cobra.OnInitialize(func() {
-		if v, _ := rootCmd.PersistentFlags().GetBool("version"); v {
-			fmt.Printf("Device Service version %s\n", common.Version)
-			os.Exit(0)
-		}
-	})
+	// cobra.OnInitialize(func() {
+	// 	if v, _ := rootCmd.PersistentFlags().GetBool("version"); v {
+	// 		fmt.Printf("Device Service version %s\n", common.Version)
+	// 		os.Exit(0)
+	// 	}
+	// })
 }
 
 // setupLogging configures the global logger based on command line flags
