@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+    "math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,7 +52,6 @@ type FirmwareService interface {
 // firmwareService implements FirmwareService
 type firmwareService struct {
 	repo           repository.Repository
-	firmwareRepo   repository.FirmwareRepository
 	log            *logrus.Logger
 	storagePath    string
 	signatureKeys  map[string]*ecdsa.PrivateKey
@@ -61,7 +61,6 @@ type firmwareService struct {
 // NewFirmwareService creates a new firmware service
 func NewFirmwareService(
 	repo repository.Repository,
-	firmwareRepo repository.FirmwareRepository,
 	log *logrus.Logger,
 	storagePath string,
 ) (FirmwareService, error) {
@@ -134,7 +133,6 @@ func NewFirmwareService(
 	
 	return &firmwareService{
 		repo:          repo,
-		firmwareRepo:  firmwareRepo,
 		log:           log,
 		storagePath:   storagePath,
 		signatureKeys: signatureKeys,
@@ -209,7 +207,7 @@ func (s *firmwareService) UploadFirmware(
 	}
 	
 	// Save to database
-	if err := s.firmwareRepo.CreateFirmwareRelease(ctx, firmwareRelease); err != nil {
+	if err := s.repo.CreateFirmwareRelease(ctx, firmwareRelease); err != nil {
 		os.Remove(filePath) // Clean up on error
 		return nil, fmt.Errorf("failed to save firmware release: %w", err)
 	}
@@ -245,7 +243,7 @@ func (s *firmwareService) ValidateFirmware(ctx context.Context, releaseID uint) 
 	if _, err := os.Stat(release.FilePath); os.IsNotExist(err) {
 		validation.ValidationStatus = "failed"
 		validation.ValidationErrors = "Firmware file not found"
-		validation.FileHashValid = false
+		validation.HashValid = false
 		
 		// Save validation results
 		if err := s.firmwareRepo.CreateFirmwareValidation(ctx, validation); err != nil {

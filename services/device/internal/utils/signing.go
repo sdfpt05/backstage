@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"math/big"
 	"errors"
 	"fmt"
 	"io"
@@ -174,7 +175,7 @@ func VerifyFirmwareSignature(publicKey *ecdsa.PublicKey, firmwarePath, signature
 	}
 
 	// Extract R and S from signature
-	r, s := new(ecdsa.Sign), new(ecdsa.Sign)
+	r, s := new(big.Int), new(big.Int) // Changed from ecdsa.Sign to big.Int
 	r.SetBytes(signatureBytes[:32])
 	s.SetBytes(signatureBytes[32:])
 
