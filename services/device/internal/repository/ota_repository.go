@@ -207,22 +207,28 @@ func (r *otaRepo) GetStuckUpdateSessions(ctx context.Context, threshold time.Tim
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	var staleSessions []*models.OTAUpdateSession
-	
-	// Find sessions that have been stuck in an intermediate state for too long
-	if err := gormDB.Preload("Device").Preload("FirmwareRelease").
-		Where(`(status = ? AND download_started_at < ?) OR 
-			  (status = ? AND acknowledged_at < ?) OR 
-			  (status = ? AND verification_started_at < ?) OR
-			  (status = ? AND install_started_at < ?)`,
-			models.OTAStatusDownloading, threshold,
-			models.OTAStatusAcknowledged, threshold,
-			models.OTAStatusVerifying, threshold,
-			models.OTAStatusInstalling, threshold).
-		Find(&staleSessions).Error; err != nil {
-		return nil, fmt.Errorf("failed to get stuck update sessions: %w", err)
+	statusThresholds := []struct {
+		Status    models.OTAUpdateStatus
+		TimeField string
+		Threshold time.Time
+	}{
+		{models.OTAStatusDownloading, "download_started_at", threshold},
+		{models.OTAStatusAcknowledged, "acknowledged_at", threshold},
+		{models.OTAStatusVerifying, "verification_started_at", threshold},
+		{models.OTAStatusInstalling, "install_started_at", threshold},
 	}
-	
+
+	var staleSessions []*models.OTAUpdateSession
+	for _, st := range statusThresholds {
+		var sessions []*models.OTAUpdateSession
+		if err := gormDB.Preload("Device").Preload("FirmwareRelease").
+			Where("status = ? AND "+st.TimeField+" < ?", st.Status, st.Threshold).
+			Find(&sessions).Error; err != nil {
+			return nil, fmt.Errorf("failed to get stuck update sessions: %w", err)
+		}
+		staleSessions = append(staleSessions, sessions...)
+	}
+
 	return staleSessions, nil
 }
 
@@ -234,76 +240,76 @@ func (r *otaRepo) GetUpdateStats(ctx context.Context) (map[string]interface{}, e
 	}
 
 	stats := make(map[string]interface{})
-	
+
 	// Get count of sessions by status
 	var statusCounts []struct {
 		Status string
 		Count  int
 	}
-	
+
 	if err := gormDB.Model(&models.OTAUpdateSession{}).
 		Select("status, count(*) as count").
 		Group("status").
 		Find(&statusCounts).Error; err != nil {
 		return nil, fmt.Errorf("failed to get status counts: %w", err)
 	}
-	
+
 	// Convert to map
 	statusCountMap := make(map[string]int)
 	for _, sc := range statusCounts {
 		statusCountMap[sc.Status] = sc.Count
 	}
 	stats["status_counts"] = statusCountMap
-	
+
 	// Get count of batches by status
 	var batchStatusCounts []struct {
 		Status string
 		Count  int
 	}
-	
+
 	if err := gormDB.Model(&models.OTAUpdateBatch{}).
 		Select("status, count(*) as count").
 		Group("status").
 		Find(&batchStatusCounts).Error; err != nil {
 		return nil, fmt.Errorf("failed to get batch status counts: %w", err)
 	}
-	
+
 	// Convert to map
 	batchStatusCountMap := make(map[string]int)
 	for _, sc := range batchStatusCounts {
 		batchStatusCountMap[sc.Status] = sc.Count
 	}
 	stats["batch_status_counts"] = batchStatusCountMap
-	
+
 	// Get total sessions and batches
 	var totalSessions, totalBatches int64
-	
+
 	if err := gormDB.Model(&models.OTAUpdateSession{}).Count(&totalSessions).Error; err != nil {
 		return nil, fmt.Errorf("failed to get total sessions: %w", err)
 	}
 	stats["total_sessions"] = totalSessions
-	
+
 	if err := gormDB.Model(&models.OTAUpdateBatch{}).Count(&totalBatches).Error; err != nil {
 		return nil, fmt.Errorf("failed to get total batches: %w", err)
 	}
 	stats["total_batches"] = totalBatches
-	
+
 	// Get recent activity
 	var recentActivity []struct {
 		Date  string
 		Count int
 	}
-	
+
 	if err := gormDB.Model(&models.OTAUpdateSession{}).
-		Select("DATE(created_at) as date, count(*) as count").
+		Select("DATE_TRUNC('day', created_at) as date, count(*) as count").
 		Where("created_at > ?", time.Now().AddDate(0, 0, -30)).
-		Group("DATE(created_at)").
+		Group("DATE_TRUNC('day', created_at)").
 		Order("date DESC").
 		Find(&recentActivity).Error; err != nil {
 		return nil, fmt.Errorf("failed to get recent activity: %w", err)
 	}
-	
+
 	stats["recent_activity"] = recentActivity
-	
+
 	return stats, nil
 }

@@ -1,14 +1,14 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
-	"fmt"
-	
+
 	"example.com/backstage/services/device/internal/models"
 	"example.com/backstage/services/device/internal/service"
 	"example.com/backstage/services/device/internal/utils"
-	
+
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
@@ -37,21 +37,21 @@ func (h *FirmwareHandler) CreateFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	if release.Version == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Version is required",
 		})
 		return
 	}
-	
+
 	if release.FilePath == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "File path is required",
 		})
 		return
 	}
-	
+
 	// Parse semantic version
 	semVer, err := utils.ParseSemanticVersion(release.Version)
 	if err != nil {
@@ -61,26 +61,26 @@ func (h *FirmwareHandler) CreateFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Create extended firmware release
 	extendedRelease := &models.FirmwareReleaseExtended{
-		FirmwareRelease: release,
-		MajorVersion:    semVer.Major,
-		MinorVersion:    semVer.Minor,
-		PatchVersion:    semVer.Patch,
+		FirmwareRelease:   release,
+		MajorVersion:      semVer.Major,
+		MinorVersion:      semVer.Minor,
+		PatchVersion:      semVer.Patch,
 		PreReleaseVersion: semVer.PreRelease,
-		BuildMetadata:   semVer.Build,
+		BuildMetadata:     semVer.Build,
 	}
-	
-	if err := h.service.CreateFirmwareRelease(c, &release); err != nil {
+
+	if err := h.service.CreateFirmwareRelease(c, &extendedRelease.FirmwareRelease); err != nil {
 		h.log.WithError(err).Error("Failed to create firmware release")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to create firmware release",
 		})
 		return
 	}
-	
-	c.JSON(http.StatusCreated, release)
+
+	c.JSON(http.StatusCreated, extendedRelease)
 }
 
 // GetFirmwareRelease handles firmware release retrieval
@@ -93,7 +93,7 @@ func (h *FirmwareHandler) GetFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	release, err := h.service.GetFirmwareRelease(c, uint(id))
 	if err != nil {
 		h.log.WithError(err).Error("Failed to get firmware release")
@@ -102,14 +102,14 @@ func (h *FirmwareHandler) GetFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, release)
 }
 
 // ListFirmwareReleases handles listing firmware releases
 func (h *FirmwareHandler) ListFirmwareReleases(c *gin.Context) {
 	releaseType := models.ReleaseType(c.DefaultQuery("type", ""))
-	
+
 	releases, err := h.service.ListFirmwareReleases(c, releaseType)
 	if err != nil {
 		h.log.WithError(err).Error("Failed to list firmware releases")
@@ -118,7 +118,7 @@ func (h *FirmwareHandler) ListFirmwareReleases(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, releases)
 }
 
@@ -132,7 +132,7 @@ func (h *FirmwareHandler) ActivateFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	if err := h.service.ActivateFirmwareRelease(c, uint(id)); err != nil {
 		h.log.WithError(err).Error("Failed to activate firmware release")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -140,7 +140,7 @@ func (h *FirmwareHandler) ActivateFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"status": "success",
 		"id":     id,
@@ -157,8 +157,8 @@ func (h *FirmwareHandler) VerifyFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
-	validation, err := h.service.VerifyFirmwareRelease(c, uint(id))
+
+	validation, err := h.service.ValidateFirmware(c, uint(id))
 	if err != nil {
 		h.log.WithError(err).Error("Failed to verify firmware release")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -166,6 +166,6 @@ func (h *FirmwareHandler) VerifyFirmwareRelease(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, validation)
 }

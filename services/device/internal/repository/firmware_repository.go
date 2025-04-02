@@ -70,6 +70,24 @@ func (r *firmwareRepo) CreateFirmwareRelease(ctx context.Context, release *model
 	})
 }
 
+// Helper function to copy fields from extended release to base release
+func copyReleaseFields(extended *models.FirmwareReleaseExtended) models.FirmwareRelease {
+	return models.FirmwareRelease{
+		Model:         extended.Model,
+		FilePath:      extended.FilePath,
+		ReleaseType:   extended.ReleaseType,
+		Version:       extended.Version,
+		Active:        extended.Active,
+		Size:          extended.Size,
+		Valid:         extended.Valid,
+		IsTest:        extended.IsTest,
+		TestReleaseID: extended.TestReleaseID,
+		TestDeviceID:  extended.TestDeviceID,
+		TestPassed:    extended.TestPassed,
+		FileHash:      extended.FileHash,
+	}
+}
+
 // UpdateFirmwareRelease updates an existing firmware release
 func (r *firmwareRepo) UpdateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) error {
 	gormDB, err := r.db.DB()
@@ -80,26 +98,15 @@ func (r *firmwareRepo) UpdateFirmwareRelease(ctx context.Context, release *model
 	// Run in transaction to ensure atomicity
 	return gormDB.Transaction(func(tx *gorm.DB) error {
 		// First update the base firmware release
-		baseRelease := &models.FirmwareRelease{
-			Model:         release.Model,
-			FilePath:      release.FilePath,
-			ReleaseType:   release.ReleaseType,
-			Version:       release.Version,
-			Active:        release.Active,
-			Size:          release.Size,
-			Valid:         release.Valid,
-			IsTest:        release.IsTest,
-			TestReleaseID: release.TestReleaseID,
-			TestDeviceID:  release.TestDeviceID,
-			TestPassed:    release.TestPassed,
-			FileHash:      release.FileHash,
-		}
+		baseRelease := copyReleaseFields(release)
 
-		if err := tx.Save(baseRelease).Error; err != nil {
+		if err := tx.Save(&baseRelease).Error; err != nil {
 			return fmt.Errorf("failed to update base firmware release: %w", err)
 		}
 
-		// Now update the extended release
+		// Update the model to ensure IDs match
+		release.Model = baseRelease.Model
+
 		if err := tx.Save(release).Error; err != nil {
 			return fmt.Errorf("failed to update extended firmware release: %w", err)
 		}
@@ -117,13 +124,13 @@ func (r *firmwareRepo) GetFirmwareReleaseByVersion(ctx context.Context, version 
 
 	var release models.FirmwareReleaseExtended
 	query := gormDB.Preload("TestRelease").Preload("TestDevice").Preload("ProductionRelease")
-	
+
 	// Apply filters
 	query = query.Where("version = ?", version)
 	if releaseType != "" {
 		query = query.Where("release_type = ?", releaseType)
 	}
-	
+
 	if err := query.First(&release).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("firmware release with version %s and type %s not found", version, releaseType)

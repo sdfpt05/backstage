@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"example.com/backstage/services/device/internal/models"
@@ -38,7 +39,7 @@ func OTASessionAuth(repo repository.Repository, log *logrus.Logger) gin.HandlerF
 		otaRepo, ok := repo.(interface {
 			FindOTASessionByID(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error)
 		})
-		
+
 		if !ok {
 			log.Error("Repository does not implement OTA repository interface")
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -60,12 +61,12 @@ func OTASessionAuth(repo repository.Repository, log *logrus.Logger) gin.HandlerF
 
 		// Store session in context
 		c.Set(string(OTASessionContextKey), session)
-		
+
 		// Also set the device context if not already set
 		if _, exists := c.Get(string(DeviceContextKey)); !exists {
 			c.Set(string(DeviceContextKey), session.Device)
 		}
-		
+
 		c.Next()
 	}
 }
@@ -87,7 +88,7 @@ func OTABatchAuth(repo repository.Repository, log *logrus.Logger) gin.HandlerFun
 		otaRepo, ok := repo.(interface {
 			FindOTABatchByID(ctx context.Context, batchID string) (*models.OTAUpdateBatch, error)
 		})
-		
+
 		if !ok {
 			log.Error("Repository does not implement OTA repository interface")
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -113,62 +114,96 @@ func OTABatchAuth(repo repository.Repository, log *logrus.Logger) gin.HandlerFun
 	}
 }
 
-// OTASessionRateLimit middleware controls the rate of OTA update requests
+// OTASessionRateLimit implements a per-device rate limiting for OTA update requests
+// to prevent devices from overwhelming the service with requests.
 func OTASessionRateLimit(log *logrus.Logger, requestsPerMinute int) gin.HandlerFunc {
-	// Simple in-memory rate limiter - in production, use Redis or similar
-	type deviceLimit struct {
-		count    int
-		lastReset time.Time
+	// Set a reasonable default if not provided
+	if requestsPerMinute <= 0 {
+		requestsPerMinute = 60 // Default to 1 request per second
 	}
-	
-	limits := make(map[uint]*deviceLimit)
-	
+
+	// Use a map to track request counts per device
+	deviceLimits := sync.Map{}
+
+	type deviceLimit struct {
+		count     int
+		lastReset time.Time
+		mutex     sync.Mutex // Per-device mutex to prevent race conditions
+	}
+
+	// Periodically clear old entries to prevent memory leaks
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			now := time.Now()
+			// Remove entries older than 30 minutes
+			deviceLimits.Range(func(key, value interface{}) bool {
+				if limit, ok := value.(*deviceLimit); ok {
+					limit.mutex.Lock()
+					defer limit.mutex.Unlock()
+
+					if now.Sub(limit.lastReset) > 30*time.Minute {
+						deviceLimits.Delete(key)
+					}
+				}
+				return true
+			})
+		}
+	}()
+
 	return func(c *gin.Context) {
 		// Get device from context
-		deviceVal, exists := c.Get(string(DeviceContextKey))
-		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Device authentication required",
-			})
-			c.Abort()
+		device, err := GetDeviceFromContext(c)
+		if err != nil {
+			log.WithError(err).Warn("Failed to get device from context for rate limiting")
+			c.Next() // Allow the request to proceed as we can't identify the device
 			return
 		}
 
-		device, ok := deviceVal.(*models.Device)
-		if !ok {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Invalid device in context",
-			})
-			c.Abort()
-			return
-		}
+		deviceID := fmt.Sprintf("%d", device.ID)
 
-		// Check rate limit
+		// Get or create rate limit entry for this device
+		limitVal, _ := deviceLimits.LoadOrStore(deviceID, &deviceLimit{
+			count:     0,
+			lastReset: time.Now(),
+			mutex:     sync.Mutex{},
+		})
+
+		limit := limitVal.(*deviceLimit)
+		limit.mutex.Lock()
+		defer limit.mutex.Unlock()
+
+		// Reset counter if minute has passed
 		now := time.Now()
-		limit, exists := limits[device.ID]
-		if !exists || now.Sub(limit.lastReset) > time.Minute {
-			// Reset limit for this device
-			limits[device.ID] = &deviceLimit{
-				count:     1,
-				lastReset: now,
-			}
-		} else {
-			// Increment count
-			limit.count++
-			
-			// Check if limit exceeded
-			if limit.count > requestsPerMinute {
-				log.Warnf("Rate limit exceeded for device: %s", device.UID)
-				c.JSON(http.StatusTooManyRequests, gin.H{
-					"error": "Rate limit exceeded",
-					"code":  "rate_limit_exceeded",
-					"retry_after": int(60 - now.Sub(limit.lastReset).Seconds()),
-				})
-				c.Abort()
-				return
-			}
+		if now.Sub(limit.lastReset) >= time.Minute {
+			limit.count = 0
+			limit.lastReset = now
 		}
 
+		// Check if rate limit is exceeded
+		if limit.count >= requestsPerMinute {
+			log.WithFields(logrus.Fields{
+				"device_id":          device.ID,
+				"device_uid":         device.UID,
+				"requests_per_min":   requestsPerMinute,
+				"current_count":      limit.count,
+				"next_reset_in_secs": 60 - int(now.Sub(limit.lastReset).Seconds()),
+			}).Warn("Rate limit exceeded for device")
+
+			// Return a proper rate limit response with Retry-After header
+			c.Header("Retry-After", fmt.Sprintf("%d", 60-int(now.Sub(limit.lastReset).Seconds())))
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":           "Rate limit exceeded",
+				"retry_after_sec": 60 - int(now.Sub(limit.lastReset).Seconds()),
+			})
+			c.Abort()
+			return
+		}
+
+		// Increment counter
+		limit.count++
 		c.Next()
 	}
 }
@@ -179,7 +214,7 @@ func OTAChunkValidator(log *logrus.Logger) gin.HandlerFunc {
 		// Get chunk parameters
 		offsetStr := c.Query("offset")
 		sizeStr := c.Query("size")
-		
+
 		// Validate offset
 		offset, err := strconv.ParseUint(offsetStr, 10, 64)
 		if err != nil {
@@ -189,7 +224,7 @@ func OTAChunkValidator(log *logrus.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Validate size
 		size, err := strconv.ParseUint(sizeStr, 10, 64)
 		if err != nil {
@@ -199,7 +234,7 @@ func OTAChunkValidator(log *logrus.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Get OTA session from context
 		sessionVal, exists := c.Get(string(OTASessionContextKey))
 		if !exists {
@@ -209,7 +244,7 @@ func OTAChunkValidator(log *logrus.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		session, ok := sessionVal.(*models.OTAUpdateSession)
 		if !ok {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -218,7 +253,7 @@ func OTAChunkValidator(log *logrus.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Check if offset is valid
 		if offset > session.TotalBytes {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -227,19 +262,19 @@ func OTAChunkValidator(log *logrus.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Check if size is valid
-		if offset + size > session.TotalBytes {
+		if offset+size > session.TotalBytes {
 			// Adjust size to valid range
 			size = session.TotalBytes - offset
 			// Store adjusted size for handler
 			c.Set("adjusted_chunk_size", size)
 		}
-		
+
 		// Store validated chunk parameters in context
 		c.Set("chunk_offset", offset)
 		c.Set("chunk_size", size)
-		
+
 		c.Next()
 	}
 }
