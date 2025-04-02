@@ -246,7 +246,7 @@ func (s *firmwareService) ValidateFirmware(ctx context.Context, releaseID uint) 
 	if _, err := os.Stat(release.FilePath); os.IsNotExist(err) {
 		validation.ValidationStatus = "failed"
 		validation.ValidationErrors = "Firmware file not found"
-		validation.FileHashValid = false
+		validation.HashValid = false
 		
 		// Save validation results
 		if err := s.firmwareRepo.CreateFirmwareValidation(ctx, validation); err != nil {

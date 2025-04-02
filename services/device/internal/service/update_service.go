@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 

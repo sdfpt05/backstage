@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"example.com/backstage/services/device/internal/database"
 	"example.com/backstage/services/device/internal/models"
 	"gorm.io/gorm"
 )
