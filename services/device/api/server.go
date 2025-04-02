@@ -1,3 +1,4 @@
+// api/server.go
 package api
 
 import (
@@ -30,7 +31,7 @@ func NewServer(
 	log *logrus.Logger, 
 	nrApp *newrelic.Application,
 	svc service.Service,
-	repo repository.Repository, // Add this parameter
+	repo repository.Repository,
 ) *Server {
 	// Set Gin mode
 	gin.SetMode(config.Server.Mode)
@@ -48,7 +49,7 @@ func NewServer(
 	}
 	
 	// Set up routes with repository for auth
-	routes.SetupRoutes(router, svc, repo, log) // Pass repo here
+	routes.SetupRoutes(router, svc, repo, log)
 	
 	return &Server{
 		router: router,

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"time"
 	
@@ -18,7 +20,7 @@ import (
 
 // Service defines the business logic operations
 type Service interface {
-	// Device operations
+	// Existing Device operations
 	RegisterDevice(ctx context.Context, device *models.Device) error
 	GetDevice(ctx context.Context, id uint) (*models.Device, error)
 	GetDeviceByUID(ctx context.Context, uid string) (*models.Device, error)
@@ -26,26 +28,51 @@ type Service interface {
 	UpdateDeviceStatus(ctx context.Context, id uint, active bool) error
 	AssignFirmwareToDevice(ctx context.Context, deviceID, releaseID uint) error
 	
-	// DeviceMessage operations
+	// Existing DeviceMessage operations
 	ProcessDeviceMessage(ctx context.Context, message *models.DeviceMessage) error
 	GetDeviceMessages(ctx context.Context, deviceID uint, limit int) ([]*models.DeviceMessage, error)
 	
-	// Organization operations
+	// Existing Organization operations
 	CreateOrganization(ctx context.Context, org *models.Organization) error
 	UpdateOrganization(ctx context.Context, org *models.Organization) error
 	GetOrganization(ctx context.Context, id uint) (*models.Organization, error)
 	ListOrganizations(ctx context.Context) ([]*models.Organization, error)
 	
-	// FirmwareRelease operations
+	// Existing FirmwareRelease operations
 	CreateFirmwareRelease(ctx context.Context, release *models.FirmwareRelease) error
 	GetFirmwareRelease(ctx context.Context, id uint) (*models.FirmwareRelease, error)
 	ListFirmwareReleases(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareRelease, error)
 	ActivateFirmwareRelease(ctx context.Context, id uint) error
 	
-	// Enhanced operations for batch processing and monitoring
+	// Existing Enhanced operations for batch processing and monitoring
 	BatchProcessMessages(ctx context.Context, messages []*models.DeviceMessage) error
 	GetProcessorStats() map[string]interface{}
 	Shutdown() error
+
+	// NEW: OTA Update API methods
+	CreateUpdateSession(ctx context.Context, deviceID, firmwareID uint, priority uint, forceUpdate, allowRollback bool) (*models.OTAUpdateSession, error)
+	GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error)
+	ListDeviceUpdateSessions(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error)
+	CancelUpdateSession(ctx context.Context, sessionID string) error
+	CreateUpdateBatch(ctx context.Context, firmwareID uint, deviceIDs []uint, priority uint, forceUpdate, allowRollback bool, maxConcurrent uint) (*models.OTAUpdateBatch, error)
+	CheckForUpdate(ctx context.Context, deviceUID string, currentVersion string) (*models.OTAUpdateSession, error)
+	AcknowledgeUpdate(ctx context.Context, sessionID string) error
+	GetUpdateChunk(ctx context.Context, sessionID string, offset, size uint64) ([]byte, error)
+	CompleteDownload(ctx context.Context, sessionID string, checksum string) error
+	CompleteUpdate(ctx context.Context, sessionID string, success bool, errorMessage string) error
+	GetStuckUpdates(ctx context.Context, thresholdMinutes int) ([]*models.OTAUpdateSession, error)
+	GetUpdateStats(ctx context.Context) (map[string]interface{}, error)
+
+	// NEW: Enhanced Firmware Management API methods
+	UploadFirmware(ctx context.Context, file io.Reader, filename string, releaseType models.ReleaseType, version string, isTest bool, notes string) (*models.FirmwareReleaseExtended, error)
+	ValidateFirmware(ctx context.Context, releaseID uint) (*models.FirmwareReleaseValidation, error)
+	SignFirmware(ctx context.Context, releaseID uint, privateKeyPEM string) error
+	PromoteTestToProduction(ctx context.Context, testReleaseID uint) (*models.FirmwareReleaseExtended, error)
+	ParseVersion(version string) (*models.SemanticVersion, error)
+	CompareVersions(v1, v2 string) (int, error)
+	GetFirmwareByVersion(ctx context.Context, version string, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error)
+	GetLatestFirmware(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error)
+	GetFirmwareFile(ctx context.Context, releaseID uint) (string, io.ReadCloser, error)
 }
 
 // service is an implementation of the Service interface
@@ -55,6 +82,10 @@ type service struct {
 	messagingClient messaging.ServiceBusClient
 	log             *logrus.Logger
 	msgProcessor    *MessageProcessor
+	
+	// NEW: Added Services
+	firmwareService FirmwareService
+	otaService      OTAService
 }
 
 // NewService creates a new service instance
@@ -75,17 +106,33 @@ func NewService(
 	// Create message processor for asynchronous processing
 	msgProcessor := NewMessageProcessor(repo, cache, messagingClient, log, workerCount)
 	
+	// Create firmware repo
+	firmwareRepo := repository.NewFirmwareRepository(repo.(*repository.repo).db)
+	
+	// Create OTA repo
+	otaRepo := repository.NewOTARepository(repo.(*repository.repo).db)
+	
+	// Create firmware service with storage path from config
+	firmwareService, err := NewFirmwareService(repo, firmwareRepo, log, "/var/firmware")
+	if err != nil {
+		log.WithError(err).Fatal("Failed to create firmware service")
+	}
+	
+	// Create OTA service
+	otaService := NewOTAService(repo, otaRepo, firmwareRepo, firmwareService, log)
+	
 	return &service{
 		repo:            repo,
 		cache:           cache,
 		messagingClient: messagingClient,
 		log:             log,
 		msgProcessor:    msgProcessor,
+		firmwareService: firmwareService,
+		otaService:      otaService,
 	}
 }
 
 // Device operations implementation
-
 func (s *service) RegisterDevice(ctx context.Context, device *models.Device) error {
 	// Generate UUID if not provided
 	if device.UID == "" {
@@ -328,4 +375,90 @@ func (s *service) ActivateFirmwareRelease(ctx context.Context, id uint) error {
 	release.Active = true
 	
 	return s.repo.UpdateFirmwareRelease(ctx, release)
+}
+
+// NEW: OTA Update Service methods - delegated to otaService
+func (s *service) CreateUpdateSession(ctx context.Context, deviceID, firmwareID uint, priority uint, forceUpdate, allowRollback bool) (*models.OTAUpdateSession, error) {
+	return s.otaService.CreateUpdateSession(ctx, deviceID, firmwareID, priority, forceUpdate, allowRollback)
+}
+
+func (s *service) GetUpdateSession(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error) {
+	return s.otaService.GetUpdateSession(ctx, sessionID)
+}
+
+func (s *service) ListDeviceUpdateSessions(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error) {
+	return s.otaService.ListDeviceUpdateSessions(ctx, deviceID, limit)
+}
+
+func (s *service) CancelUpdateSession(ctx context.Context, sessionID string) error {
+	return s.otaService.CancelUpdateSession(ctx, sessionID)
+}
+
+func (s *service) CreateUpdateBatch(ctx context.Context, firmwareID uint, deviceIDs []uint, priority uint, forceUpdate, allowRollback bool, maxConcurrent uint) (*models.OTAUpdateBatch, error) {
+	return s.otaService.CreateUpdateBatch(ctx, firmwareID, deviceIDs, priority, forceUpdate, allowRollback, maxConcurrent)
+}
+
+func (s *service) CheckForUpdate(ctx context.Context, deviceUID string, currentVersion string) (*models.OTAUpdateSession, error) {
+	return s.otaService.CheckForUpdate(ctx, deviceUID, currentVersion)
+}
+
+func (s *service) AcknowledgeUpdate(ctx context.Context, sessionID string) error {
+	return s.otaService.AcknowledgeUpdate(ctx, sessionID)
+}
+
+func (s *service) GetUpdateChunk(ctx context.Context, sessionID string, offset, size uint64) ([]byte, error) {
+	return s.otaService.GetUpdateChunk(ctx, sessionID, offset, size)
+}
+
+func (s *service) CompleteDownload(ctx context.Context, sessionID string, checksum string) error {
+	return s.otaService.CompleteDownload(ctx, sessionID, checksum)
+}
+
+func (s *service) CompleteUpdate(ctx context.Context, sessionID string, success bool, errorMessage string) error {
+	return s.otaService.CompleteUpdate(ctx, sessionID, success, errorMessage)
+}
+
+func (s *service) GetStuckUpdates(ctx context.Context, thresholdMinutes int) ([]*models.OTAUpdateSession, error) {
+	return s.otaService.GetStuckUpdates(ctx, thresholdMinutes)
+}
+
+func (s *service) GetUpdateStats(ctx context.Context) (map[string]interface{}, error) {
+	return s.otaService.GetUpdateStats(ctx)
+}
+
+// NEW: Firmware Service methods - delegated to firmwareService
+func (s *service) UploadFirmware(ctx context.Context, file io.Reader, filename string, releaseType models.ReleaseType, version string, isTest bool, notes string) (*models.FirmwareReleaseExtended, error) {
+	return s.firmwareService.UploadFirmware(ctx, file, filename, releaseType, version, isTest, notes)
+}
+
+func (s *service) ValidateFirmware(ctx context.Context, releaseID uint) (*models.FirmwareReleaseValidation, error) {
+	return s.firmwareService.ValidateFirmware(ctx, releaseID)
+}
+
+func (s *service) SignFirmware(ctx context.Context, releaseID uint, privateKeyPEM string) error {
+	return s.firmwareService.SignFirmware(ctx, releaseID, privateKeyPEM)
+}
+
+func (s *service) PromoteTestToProduction(ctx context.Context, testReleaseID uint) (*models.FirmwareReleaseExtended, error) {
+	return s.firmwareService.PromoteTestToProduction(ctx, testReleaseID)
+}
+
+func (s *service) ParseVersion(version string) (*models.SemanticVersion, error) {
+	return s.firmwareService.ParseVersion(version)
+}
+
+func (s *service) CompareVersions(v1, v2 string) (int, error) {
+	return s.firmwareService.CompareVersions(v1, v2)
+}
+
+func (s *service) GetFirmwareByVersion(ctx context.Context, version string, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error) {
+	return s.firmwareService.GetFirmwareByVersion(ctx, version, releaseType)
+}
+
+func (s *service) GetLatestFirmware(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error) {
+	return s.firmwareService.GetLatestFirmware(ctx, releaseType)
+}
+
+func (s *service) GetFirmwareFile(ctx context.Context, releaseID uint) (string, io.ReadCloser, error) {
+	return s.firmwareService.GetFirmwareFile(ctx, releaseID)
 }

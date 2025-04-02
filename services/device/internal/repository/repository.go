@@ -47,6 +47,38 @@ type Repository interface {
 	UpdateAPIKey(ctx context.Context, apiKey *models.APIKey) error
 	ListAPIKeys(ctx context.Context) ([]*models.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id uint) error
+    
+	// Enhanced Firmware Release operations
+	CreateFirmwareReleaseExtended(ctx context.Context, release *models.FirmwareReleaseExtended) error
+	UpdateFirmwareReleaseExtended(ctx context.Context, release *models.FirmwareReleaseExtended) error
+	FindFirmwareReleaseExtendedByID(ctx context.Context, id uint) (*models.FirmwareReleaseExtended, error)
+	FindFirmwareReleaseByVersion(ctx context.Context, version string) (*models.FirmwareReleaseExtended, error)
+	FindFirmwareReleaseBySemanticVersion(ctx context.Context, major, minor, patch uint) (*models.FirmwareReleaseExtended, error)
+	ListFirmwareReleasesExtended(ctx context.Context, releaseType models.ReleaseType) ([]*models.FirmwareReleaseExtended, error)
+	ValidateFirmwareRelease(ctx context.Context, release *models.FirmwareReleaseExtended) (*models.FirmwareReleaseValidation, error)
+	GetLatestFirmwareRelease(ctx context.Context, releaseType models.ReleaseType) (*models.FirmwareReleaseExtended, error)
+	GetFirmwareManifest(ctx context.Context) (*models.FirmwareManifest, error)
+	UpdateFirmwareManifest(ctx context.Context, manifest *models.FirmwareManifest) error
+
+	// OTA Update operations
+	CreateOTAUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error
+	UpdateOTAUpdateSession(ctx context.Context, session *models.OTAUpdateSession) error
+	FindOTAUpdateSessionByID(ctx context.Context, id uint) (*models.OTAUpdateSession, error)
+	FindOTAUpdateSessionBySessionID(ctx context.Context, sessionID string) (*models.OTAUpdateSession, error)
+	ListOTAUpdateSessionsByDevice(ctx context.Context, deviceID uint, limit int) ([]*models.OTAUpdateSession, error)
+	ListOTAUpdateSessionsByStatus(ctx context.Context, status models.OTAUpdateStatus, limit int) ([]*models.OTAUpdateSession, error)
+	UpdateOTAUpdateSessionStatus(ctx context.Context, sessionID string, status models.OTAUpdateStatus) error
+	UpdateOTAUpdateSessionProgress(ctx context.Context, sessionID string, bytesDownloaded uint64, chunksReceived uint) error
+	CreateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error
+	UpdateOTAUpdateBatch(ctx context.Context, batch *models.OTAUpdateBatch) error
+	FindOTAUpdateBatchByID(ctx context.Context, id uint) (*models.OTAUpdateBatch, error)
+	FindOTAUpdateBatchByBatchID(ctx context.Context, batchID string) (*models.OTAUpdateBatch, error)
+	ListOTAUpdateBatchesByStatus(ctx context.Context, status models.OTAUpdateStatus, limit int) ([]*models.OTAUpdateBatch, error)
+	LogOTAEvent(ctx context.Context, log *models.OTADeviceLog) error
+	GetOTALogsBySession(ctx context.Context, sessionID string, limit int) ([]*models.OTADeviceLog, error)
+	GetOTALogsByDevice(ctx context.Context, deviceID uint, limit int) ([]*models.OTADeviceLog, error)
+	FindStaleOTAUpdateSessions(ctx context.Context, threshold time.Duration) ([]*models.OTAUpdateSession, error)
+	CancelOTAUpdateSession(ctx context.Context, sessionID string, reason string) error
 }
 
 // repo is an implementation of the Repository interface

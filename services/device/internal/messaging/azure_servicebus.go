@@ -1,3 +1,4 @@
+// internal/messaging/azure_servicebus.go
 package messaging
 
 import (
@@ -27,15 +28,10 @@ type serviceBusClient struct {
 	clientType string
 }
 
-// mockServiceBusClient is a mock implementation for local development
-type mockServiceBusClient struct {
-	clientType string
-}
-
 // NewServiceBusClient creates a new Azure Service Bus client
 func NewServiceBusClient(cfg config.ServiceBusConfig, clientType string) (ServiceBusClient, error) {
 	if cfg.ConnectionString == "" {
-		return &mockServiceBusClient{clientType: clientType}, nil
+		return nil, fmt.Errorf("service bus connection string not provided")
 	}
 	
 	// Create the Service Bus client
@@ -65,7 +61,7 @@ func generateSessionID() string {
 	return hex.EncodeToString(bytes)
 }
 
-// SendMessage sends a message to the Service Bus queue
+// SendMessage sends a message to the Service Bus queue with retry logic
 func (s *serviceBusClient) SendMessage(ctx context.Context, body interface{}, sessionID string) error {
 	// Convert the body to JSON
 	data, err := json.Marshal(body)
@@ -88,8 +84,26 @@ func (s *serviceBusClient) SendMessage(ctx context.Context, body interface{}, se
 		SessionID: &sessionID,
 	}
 	
-	// Send the message
-	return s.sender.SendMessage(ctx, msg, nil)
+	// Send the message with retries
+	maxRetries := 3
+	backoff := 500 * time.Millisecond
+	
+	for i := 0; i < maxRetries; i++ {
+		err := s.sender.SendMessage(ctx, msg, nil)
+		if err == nil {
+			return nil
+		}
+		
+		// If this is the last retry, return the error
+		if i == maxRetries-1 {
+			return fmt.Errorf("failed to send message after %d retries: %w", maxRetries, err)
+		}
+		
+		// Wait with exponential backoff before retrying
+		time.Sleep(backoff * time.Duration(1<<uint(i)))
+	}
+	
+	return nil // This line should never be reached, but added for completeness
 }
 
 // Close closes the Service Bus client
@@ -106,18 +120,5 @@ func (s *serviceBusClient) Close() error {
 		return s.client.Close(context.Background())
 	}
 	
-	return nil
-}
-
-// SendMessage implementation for mock client
-func (m *mockServiceBusClient) SendMessage(ctx context.Context, body interface{}, sessionID string) error {
-	// Just log the message for local development
-	fmt.Printf("[MOCK ServiceBus] Message sent from %s with sessionID %s: %+v\n", 
-		m.clientType, sessionID, body)
-	return nil
-}
-
-// Close implementation for mock client
-func (m *mockServiceBusClient) Close() error {
 	return nil
 }

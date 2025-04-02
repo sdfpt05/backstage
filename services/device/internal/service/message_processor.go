@@ -1,3 +1,4 @@
+// internal/service/message_processor.go
 package service
 
 import (
@@ -19,15 +20,16 @@ import (
 
 // MessageProcessor handles asynchronous message processing
 type MessageProcessor struct {
-	repo            repository.Repository
-	cache           cache.RedisClient
-	messagingClient messaging.ServiceBusClient
-	log             *logrus.Logger
-	workers         int
-	queue           chan *models.DeviceMessage
-	wg              sync.WaitGroup
-	ctx             context.Context
-	cancel          context.CancelFunc
+	repo                    repository.Repository
+	cache                   cache.RedisClient
+	messagingClient         messaging.ServiceBusClient
+	log                     *logrus.Logger
+	workers                 int
+	queue                   chan *models.DeviceMessage
+	wg                      sync.WaitGroup
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	queueCapacityAlertThreshold float64
 }
 
 // NewMessageProcessor creates a new message processor with worker pool
@@ -40,18 +42,23 @@ func NewMessageProcessor(
 ) *MessageProcessor {
 	ctx, cancel := context.WithCancel(context.Background())
 	mp := &MessageProcessor{
-		repo:            repo,
-		cache:           cache,
-		messagingClient: messagingClient,
-		log:             log,
-		workers:         workers,
-		queue:           make(chan *models.DeviceMessage, 10000), // Buffer size
-		ctx:             ctx,
-		cancel:          cancel,
+		repo:                    repo,
+		cache:                   cache,
+		messagingClient:         messagingClient,
+		log:                     log,
+		workers:                 workers,
+		queue:                   make(chan *models.DeviceMessage, 10000), // Buffer size
+		ctx:                     ctx,
+		cancel:                  cancel,
+		queueCapacityAlertThreshold: 0.8, // 80% by default
 	}
 	
 	// Start worker pool
 	mp.startWorkers()
+	
+	// Start queue monitoring
+	go mp.monitorQueueCapacity()
+	
 	mp.log.Infof("Started message processor with %d workers", workers)
 	
 	return mp
@@ -82,7 +89,64 @@ func (mp *MessageProcessor) worker(id int) {
 	}
 }
 
-// processMessage handles the actual message processing
+// monitorQueueCapacity monitors the queue capacity and logs warnings when threshold is exceeded
+func (mp *MessageProcessor) monitorQueueCapacity() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-mp.ctx.Done():
+			return
+		case <-ticker.C:
+			queueLength := len(mp.queue)
+			queueCapacity := cap(mp.queue)
+			usage := float64(queueLength) / float64(queueCapacity)
+			
+			if usage >= mp.queueCapacityAlertThreshold {
+				mp.log.Warnf("Message queue at %d%% capacity (%d/%d)!", int(usage*100), queueLength, queueCapacity)
+				// Could trigger external alerting here
+			}
+		}
+	}
+}
+
+// updateDeviceCache updates the device cache with retry logic
+func (mp *MessageProcessor) updateDeviceCache(ctx context.Context, device *models.Device) {
+	if device == nil {
+		return
+	}
+	
+	cacheKey := fmt.Sprintf("device:%s", device.UID)
+	deviceJSON, err := json.Marshal(device)
+	if err != nil {
+		mp.log.WithError(err).Warnf("Failed to marshal device for cache: %s", device.UID)
+		return
+	}
+	
+	maxRetries := 3
+	backoff := 100 * time.Millisecond
+	
+	for i := 0; i < maxRetries; i++ {
+		err := mp.cache.Set(ctx, cacheKey, string(deviceJSON), 24*time.Hour)
+		if err == nil {
+			mp.log.Debugf("Updated device cache for: %s", device.UID)
+			return
+		}
+		
+		mp.log.WithError(err).Warnf("Failed to update device cache (attempt %d/%d): %s", i+1, maxRetries, device.UID)
+		
+		// If not the last retry, try again with backoff
+		if i < maxRetries-1 {
+			time.Sleep(backoff * time.Duration(1<<uint(i))) // Exponential backoff
+			continue
+		}
+		
+		mp.log.WithError(err).Errorf("Failed to update device cache after all retries: %s", device.UID)
+	}
+}
+
+// processMessage handles the actual message processing with improved transaction support
 func (mp *MessageProcessor) processMessage(message *models.DeviceMessage) {
 	ctx := context.Background()
 	
@@ -112,41 +176,29 @@ func (mp *MessageProcessor) processMessage(message *models.DeviceMessage) {
 			message.DeviceID = device.ID
 			message.Device = device
 			
-			// Update cache in background
-			go func(d *models.Device) {
-				deviceJSON, err := json.Marshal(d)
-				if err == nil {
-					mp.cache.Set(context.Background(), cacheKey, string(deviceJSON), 24*time.Hour)
-					mp.log.Debugf("Updated device cache for: %s", d.UID)
-				} else {
-					mp.log.WithError(err).Warnf("Failed to marshal device for cache: %s", d.UID)
-				}
-			}(device)
+			// Update cache with new improved method
+			go mp.updateDeviceCache(context.Background(), device)
 		}
 	} else {
 		message.DeviceID = device.ID
 		message.Device = device
 	}
 	
-	// Save message to database
-	if err := mp.repo.SaveDeviceMessage(ctx, message); err != nil {
-		mp.log.WithError(err).Error("Failed to save message")
-		return
-	}
-	
-	// If device was found, publish the message to the message queue
-	if !message.Error {
-		// Use device UID as the session ID
-		sessionID := message.DeviceMCU
+	// Use transaction for database operations
+	err = mp.repo.WithTransaction(ctx, func(txCtx context.Context, txRepo repository.Repository) error {
+		// Save message to database
+		if err := txRepo.SaveDeviceMessage(txCtx, message); err != nil {
+			return fmt.Errorf("failed to save message: %w", err)
+		}
 		
-		// Publish in background to avoid blocking
-		go func() {
-			pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+		// If device was found, publish the message
+		if !message.Error {
+			// Use device UID as the session ID
+			sessionID := message.DeviceMCU
 			
-			if err := mp.messagingClient.SendMessage(pubCtx, message, sessionID); err != nil {
-				mp.log.WithError(err).Error("Failed to publish message")
-				return
+			// Publish to Service Bus
+			if err := mp.messagingClient.SendMessage(txCtx, message, sessionID); err != nil {
+				return fmt.Errorf("failed to publish message: %w", err)
 			}
 			
 			// Mark as published
@@ -154,12 +206,16 @@ func (mp *MessageProcessor) processMessage(message *models.DeviceMessage) {
 			message.Published = true
 			message.PublishedAt = &now
 			
-			if err := mp.repo.MarkMessageAsPublished(context.Background(), message.UUID); err != nil {
-				mp.log.WithError(err).Error("Failed to mark message as published")
-			} else {
-				mp.log.Debugf("Message marked as published: %s", message.UUID)
+			if err := txRepo.MarkMessageAsPublished(txCtx, message.UUID); err != nil {
+				return fmt.Errorf("failed to mark message as published: %w", err)
 			}
-		}()
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		mp.log.WithError(err).Error("Failed to process message")
 	}
 }
 

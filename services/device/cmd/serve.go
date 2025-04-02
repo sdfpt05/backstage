@@ -42,7 +42,9 @@ func init() {
 	serveCmd.Flags().BoolVar(&disableMigration, "disable-migration", false, "Disable automatic database migration on startup")
 }
 
-// runServer starts the API server and handles graceful shutdown
+
+
+// Modify the existing runServer function to pass the repository to the server
 func runServer() {
 	// Load configuration
 	cfg, err := config.Load()
@@ -91,9 +93,9 @@ func runServer() {
 	
 	// Initialize service
 	svc := service.NewService(repo, redisClient, sbClient, log)
-	
-	// Initialize and start the server
-	server := api.NewServer(cfg, log, nrApp, svc, repo) 
+
+	// Initialize and start the server - pass repo to server
+	server := api.NewServer(cfg, log, nrApp, svc, repo) // Pass repo here
 	go func() {
 		log.Infof("Starting server on port %d (mode: %s)", cfg.Server.Port, cfg.Server.Mode)
 		if err := server.Start(); err != nil {

@@ -14,6 +14,8 @@ type Config struct {
 	Redis      RedisConfig
 	ServiceBus ServiceBusConfig
 	NewRelic   NewRelicConfig
+	Firmware   FirmwareConfig    // New: Firmware configuration
+	OTA        OTAConfig         // New: OTA configuration
 }
 
 // ServerConfig holds the HTTP server configuration
@@ -119,6 +121,22 @@ func setDefaults() {
 	// New Relic defaults
 	viper.SetDefault("newrelic.appname", "Device Service Local")
 	viper.SetDefault("newrelic.enabled", false)
+	
+	// Firmware defaults
+	viper.SetDefault("firmware.storage_path", "./firmware")
+	viper.SetDefault("firmware.keys_path", "./keys")
+	viper.SetDefault("firmware.signing_algorithm", "secp256r1")
+	viper.SetDefault("firmware.public_key_file", "ecdsa-public.pem")
+	viper.SetDefault("firmware.private_key_file", "ecdsa-private.pem")
+	viper.SetDefault("firmware.verify_signatures", true)
+	
+	// OTA defaults
+	viper.SetDefault("ota.chunk_size", 8192)
+	viper.SetDefault("ota.max_concurrent_updates", 100)
+	viper.SetDefault("ota.download_timeout", 3600)  // 1 hour
+	viper.SetDefault("ota.max_retries", 3)
+	viper.SetDefault("ota.session_lifetime", 86400) // 24 hours
+	viper.SetDefault("ota.delta_updates", false)
 }
 
 // Load loads the configuration
@@ -160,11 +178,35 @@ func Load() (*Config, error) {
 		Enabled:    viper.GetBool("newrelic.enabled"),
 	}
 	
+	// Firmware configuration
+	firmwareConfig := FirmwareConfig{
+		StoragePath:       viper.GetString("firmware.storage_path"),
+		KeysPath:          viper.GetString("firmware.keys_path"),
+		SigningAlgorithm:  viper.GetString("firmware.signing_algorithm"),
+		PublicKeyFile:     viper.GetString("firmware.public_key_file"),
+		PrivateKeyFile:    viper.GetString("firmware.private_key_file"),
+		VerifySignatures:  viper.GetBool("firmware.verify_signatures"),
+		RequireSignatures: viper.GetBool("firmware.require_signatures"),
+	}
+	
+	// OTA configuration
+	otaConfig := OTAConfig{
+		ChunkSize:           viper.GetInt("ota.chunk_size"),
+		MaxConcurrentUpdates: viper.GetInt("ota.max_concurrent_updates"),
+		DownloadTimeout:     viper.GetInt("ota.download_timeout"),
+		MaxRetries:          viper.GetInt("ota.max_retries"),
+		SessionLifetime:     viper.GetInt("ota.session_lifetime"),
+		DeltaUpdates:        viper.GetBool("ota.delta_updates"),
+		DefaultUpdateType:   viper.GetString("ota.default_update_type"),
+	}
+	
 	return &Config{
 		Server:     serverConfig,
 		Database:   dbConfig,
 		Redis:      redisConfig,
 		ServiceBus: serviceBusConfig,
 		NewRelic:   newRelicConfig,
+		Firmware:   firmwareConfig,
+		OTA:        otaConfig,
 	}, nil
 }

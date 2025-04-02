@@ -3,9 +3,11 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"fmt"
 	
 	"example.com/backstage/services/device/internal/models"
 	"example.com/backstage/services/device/internal/service"
+	"example.com/backstage/services/device/internal/utils"
 	
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -48,6 +50,26 @@ func (h *FirmwareHandler) CreateFirmwareRelease(c *gin.Context) {
 			"error": "File path is required",
 		})
 		return
+	}
+	
+	// Parse semantic version
+	semVer, err := utils.ParseSemanticVersion(release.Version)
+	if err != nil {
+		h.log.WithError(err).Warn("Invalid semantic version format")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("Invalid semantic version: %v", err),
+		})
+		return
+	}
+	
+	// Create extended firmware release
+	extendedRelease := &models.FirmwareReleaseExtended{
+		FirmwareRelease: release,
+		MajorVersion:    semVer.Major,
+		MinorVersion:    semVer.Minor,
+		PatchVersion:    semVer.Patch,
+		PreReleaseVersion: semVer.PreRelease,
+		BuildMetadata:   semVer.Build,
 	}
 	
 	if err := h.service.CreateFirmwareRelease(c, &release); err != nil {
@@ -123,4 +145,27 @@ func (h *FirmwareHandler) ActivateFirmwareRelease(c *gin.Context) {
 		"status": "success",
 		"id":     id,
 	})
+}
+
+// VerifyFirmwareRelease handles verification of a firmware release
+func (h *FirmwareHandler) VerifyFirmwareRelease(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid firmware release ID",
+		})
+		return
+	}
+	
+	validation, err := h.service.VerifyFirmwareRelease(c, uint(id))
+	if err != nil {
+		h.log.WithError(err).Error("Failed to verify firmware release")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Failed to verify firmware release: %v", err),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, validation)
 }

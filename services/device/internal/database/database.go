@@ -1,3 +1,4 @@
+// internal/database/database.go
 package database
 
 import (
@@ -89,7 +90,7 @@ func AutoMigrate(db DB) error {
 		&models.FirmwareRelease{},
 		&models.Device{},
 		&models.DeviceMessage{},
-		&models.APIKey{}, 
+		&models.APIKey{}, // Add API Keys table
 	)
 	
 	if err != nil {

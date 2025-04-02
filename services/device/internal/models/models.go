@@ -84,3 +84,6 @@ type DeviceMessage struct {
 	ErrorMessage string     `json:"error_message" gorm:"Column:error_message"`
 	SentVia      string     `json:"sent_via" gorm:"Column:sent_via"`
 }
+
+
+

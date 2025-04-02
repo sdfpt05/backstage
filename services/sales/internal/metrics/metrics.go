@@ -9,6 +9,7 @@ import (
 // MetricType defines types of metrics we track
 type MetricType string
 
+
 // Different metric types
 const (
 	TypeCounter     MetricType = "counter"     // Always increasing count

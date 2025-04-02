@@ -120,6 +120,16 @@ func DeviceAuth(repo repository.Repository, log *logrus.Logger) gin.HandlerFunc 
 			c.Abort()
 			return
 		}
+		
+		// Check if the device is active
+		if !device.Active {
+			log.Warnf("Inactive device attempted to authenticate: %s", deviceUID)
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Device is inactive",
+			})
+			c.Abort()
+			return
+		}
 
 		// Store the device in the context for later use
 		c.Set(string(DeviceContextKey), device)
