@@ -1,0 +1,158 @@
+version: '3.8'
+
+services:
+
+  canister:
+    build:
+      context: .
+      dockerfile: services/canister/Dockerfile
+      target: dev
+    volumes:
+      - .:/app
+      - canister-tmp:/app/services/canister/tmp
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=development
+      - DB_SOURCE=postgresql://postgres:postgres@postgres:5432/canister?sslmode=disable
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - AZURE_SERVICE_BUS_CONNECTION_STRING=Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy
+    depends_on:
+      - postgres
+      - elasticsearch
+    networks:
+      - backstage-network
+
+  device:
+    build:
+      context: .
+      dockerfile: services/device/Dockerfile
+      target: dev
+    volumes:
+      - .:/app
+      - device-tmp:/app/services/device/tmp
+    ports:
+      - "8091:8091"
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/device?sslmode=disable
+    depends_on:
+      - postgres
+    networks:
+      - backstage-network
+
+  sales:
+    build:
+      context: .
+      dockerfile: services/sales/Dockerfile
+      target: dev
+    volumes:
+      - .:/app
+      - sales-tmp:/app/services/sales/tmp
+    ports:
+      - "8081:8080"  # Mapped to different host port to avoid conflict with canister
+    environment:
+      - APP_ENV=development
+      - DB_DSN=postgresql://postgres:postgres@postgres:5432/sales?sslmode=disable
+      - DB_READ_ONLY_DSN=postgresql://postgres:postgres@postgres:5432/sales_readonly?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - ELASTIC_URL=http://elasticsearch:9200
+      - AZURE_SERVICE_BUS_CONNECTION_STRING=Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+    networks:
+      - backstage-network
+
+  truck:
+    build:
+      context: .
+      dockerfile: services/truck/Dockerfile
+      target: dev
+    volumes:
+      - .:/app
+      - truck-tmp:/app/services/truck/tmp
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/truck?sslmode=disable
+      - REDIS_URL=redis://redis:6379/1
+      - MESSAGE_BUS_CONNECTION_STRING=Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - backstage-network
+
+  # Dependencies
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_MULTIPLE_DATABASES=canister,device,sales,sales_readonly,truck
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-multiple-postgres-databases.sh:/docker-entrypoint-initdb.d/init-multiple-postgres-databases.sh
+    networks:
+      - backstage-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - backstage-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.9.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - backstage-network
+
+  # Development Tools
+  adminer:
+    image: adminer
+    ports:
+      - "8082:8080"
+    depends_on:
+      - postgres
+    networks:
+      - backstage-network
+
+  redis-commander:
+    image: rediscommander/redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8083:8081"
+    depends_on:
+      - redis
+    networks:
+      - backstage-network
+
+networks:
+  backstage-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  elasticsearch-data:
+  canister-tmp:
+  device-tmp:
+  sales-tmp:
+  truck-tmp:

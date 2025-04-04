@@ -1,29 +1,53 @@
-FROM golang:1.23-alpine AS builder
+# Development stage with air for live reloading
+FROM golang:1.24-alpine AS dev
+
+# Install air for live reloading and required tools
+RUN go install github.com/air-verse/air@latest && \
+    apk add --no-cache git
 
 WORKDIR /app
 
-# Copy pkg and current service only
+# Copy go.work files for workspace support
+COPY go.work* ./
+
+# Copy the entire workspace structure needed for this service
+COPY pkg/ ./pkg/
+COPY services/device/ ./services/device/
+
+# Set working directory to the service
+WORKDIR /app/services/device
+
+# Default command for development
+CMD ["air", "-c", ".air.toml"]
+
+# Build stage
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Copy go.work for workspace support
+COPY go.work* ./
+
+# Copy modules
 COPY pkg/ ./pkg/
 COPY services/device/ ./services/device/
 
 # Build the service
 WORKDIR /app/services/device
+RUN go build -o device-service .
 
-# Add a temporary module replacement that points to the correct path
-RUN go mod edit -replace=example.com/backstage/pkg=/app/pkg && \
-    go mod tidy && \
-    go build -o service .
-
-FROM alpine:latest
+FROM alpine:3.18
 
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /app/services/device/service .
+COPY --from=builder /app/services/device/device-service .
+COPY --from=builder /app/services/device/config.yaml ./config.yaml
 
 # Expose service port
 EXPOSE 8091
 
-CMD ["./service"]
+# Default command (matches available command in cmd package)
+ENTRYPOINT ["./device-service"]

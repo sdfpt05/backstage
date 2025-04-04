@@ -1,32 +1,52 @@
-# Build stage
-FROM golang:1.23-alpine AS builder
+# Development stage with air for live reloading
+FROM golang:1.24-alpine AS dev
 
-# Set working directory
+# Install air for live reloading and required tools
+RUN go install github.com/air-verse/air@latest && \
+    apk add --no-cache git
+
 WORKDIR /app
 
-# Copy go.mod and go.sum files
-COPY go.mod go.sum ./
+# Copy go.work files for workspace support
+COPY go.work* ./
 
-# Download dependencies
-RUN go mod download
+# Copy the entire workspace structure needed for this service
+COPY pkg/ ./pkg/
+COPY services/sales/ ./services/sales/
 
-# Copy the source code
-COPY . .
+# Set working directory to the service
+WORKDIR /app/services/sales
+
+# Default command for development
+CMD ["air", "-c", ".air.toml"]
+
+# Build stage
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Copy go.work for workspace support
+COPY go.work* ./
+
+# Copy modules
+COPY pkg/ ./pkg/
+COPY services/sales/ ./services/sales/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o sales-service ./cmd/main.go
+WORKDIR /app/services/sales
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o sales-service .
 
 # Runtime stage
-FROM alpine:3.17
+FROM alpine:3.18
 
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apk --no-cache add ca-certificates tzdata
 
-# Copy the binary from builder
-COPY --from=builder /app/canister-service .
-COPY --from=builder /app/app.env .
+# Copy the binary from builder (fixed from sales to sales-service)
+COPY --from=builder /app/services/sales/sales-service .
+COPY --from=builder /app/services/sales/app.env .
 
 # Create a non-root user and set permissions
 RUN adduser -D -g '' appuser && \
@@ -39,5 +59,5 @@ EXPOSE 8080
 # Set entry point
 ENTRYPOINT ["./sales-service"]
 
-# Default command
-CMD ["server"]
+# Default command - based on available commands in cmd package
+CMD ["api"]

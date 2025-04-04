@@ -1,23 +1,43 @@
-# Build stage
-FROM golang:1.20-alpine AS builder
+# Development stage with air for live reloading
+FROM golang:1.24-alpine AS dev
 
-# Set working directory
+# Install air for live reloading and required tools
+RUN go install github.com/air-verse/air@latest && \
+    apk add --no-cache git
+
 WORKDIR /app
 
-# Copy go.mod and go.sum files
-COPY go.mod go.sum ./
+# Copy go.work files for workspace support
+COPY go.work* ./
 
-# Download dependencies
-RUN go mod download
+# Copy the entire workspace structure needed for this service
+COPY pkg/ ./pkg/
+COPY services/canister/ ./services/canister/
 
-# Copy the source code
-COPY . .
+# Set working directory to the service
+WORKDIR /app/services/canister
+
+# Default command for development
+CMD ["air", "-c", ".air.toml"]
+
+# Build stage
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Copy go.work for workspace support
+COPY go.work* ./
+
+# Copy modules
+COPY pkg/ ./pkg/
+COPY services/canister/ ./services/canister/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o canister-service ./cmd/main.go
+WORKDIR /app/services/canister
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o canister-service .
 
 # Runtime stage
-FROM alpine:3.17
+FROM alpine:3.18
 
 WORKDIR /app
 
@@ -25,8 +45,8 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates tzdata
 
 # Copy the binary from builder
-COPY --from=builder /app/canister-service .
-COPY --from=builder /app/app.env .
+COPY --from=builder /app/services/canister/canister-service .
+COPY --from=builder /app/services/canister/app.env .
 
 # Create a non-root user and set permissions
 RUN adduser -D -g '' appuser && \

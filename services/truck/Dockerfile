@@ -1,31 +1,55 @@
-FROM golang:1.23-alpine AS builder
+# Development stage with air for live reloading
+FROM golang:1.24-alpine AS dev
+
+# Install air for live reloading and required tools
+RUN go install github.com/air-verse/air@latest && \
+    apk add --no-cache git
+
+WORKDIR /app
+
+# Copy go.work files for workspace support
+COPY go.work* ./
+
+# Copy the entire workspace structure needed for this service
+COPY pkg/ ./pkg/
+COPY services/truck/ ./services/truck/
+
+# Set working directory to the service
+WORKDIR /app/services/truck
+
+# Default command for development
+CMD ["air", "-c", ".air.toml"]
+
+# Build stage
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
 # Install dependencies
 RUN apk add --no-cache git
 
-# Copy and download dependencies
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy go.work for workspace support
+COPY go.work* ./
 
-# Copy the source code
-COPY . .
+# Copy modules
+COPY pkg/ ./pkg/
+COPY services/truck/ ./services/truck/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/operations-service
+WORKDIR /app/services/truck
+RUN CGO_ENABLED=0 GOOS=linux go build -o operations-service .
 
 # Final stage
-FROM alpine:3.17
+FROM alpine:3.18
 
 WORKDIR /app
 
 # Install CA certificates
 RUN apk --no-cache add ca-certificates tzdata
 
-# Copy the binary from builder
-COPY --from=builder /app/operations-service /app/operations-service
-COPY --from=builder /app/config /app/config
+# Copy the binary from builder (using correct name from cmd/root.go)
+COPY --from=builder /app/services/truck/operations-service /app/operations-service
+COPY --from=builder /app/services/truck/config /app/config
 
 # Create a non-root user and group
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
