@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -10,29 +11,36 @@ var configFile string
 
 type Config struct {
 	// Database
-	DBDriver  string `mapstructure:"DB_DRIVER"`
-	DBSource  string `mapstructure:"DB_SOURCE"`
+	DBDriver string `mapstructure:"database.driver"`
+	DBSource string `mapstructure:"database.source"`
 	
 	// HTTP Server
-	HTTPServerAddress string `mapstructure:"HTTP_SERVER_ADDRESS"`
+	HTTPServerAddress string        `mapstructure:"server.address"`
+	HTTPServerTimeout time.Duration `mapstructure:"server.timeout"`
+	CorsEnabled       bool          `mapstructure:"server.cors_enabled"`
+	CorsOrigins       []string      `mapstructure:"server.cors_origins"`
 	
 	// Elasticsearch
-	ElasticSearchURL      string `mapstructure:"ELASTIC_SEARCH_URL"`
-	ElasticSearchUsername string `mapstructure:"ELASTIC_SEARCH_USERNAME"`
-	ElasticSearchPassword string `mapstructure:"ELASTIC_SEARCH_PASSWORD"`
-	ElasticSearchPrefix   string `mapstructure:"ELASTIC_SEARCH_PREFIX"`
+	ElasticSearchURL      string `mapstructure:"elasticsearch.url"`
+	ElasticSearchUsername string `mapstructure:"elasticsearch.username"`
+	ElasticSearchPassword string `mapstructure:"elasticsearch.password"`
+	ElasticSearchPrefix   string `mapstructure:"elasticsearch.prefix"`
 	
 	// Azure Service Bus
-	AzureQueueConnStr                   string `mapstructure:"AZURE_QUEUE_CONN_STR"`
-	AzureMessagesConfigurationQueueName string `mapstructure:"AZURE_MESSAGES_CONF_QUEUE_NAME"`
-	AzureMessagesEventsQueueName        string `mapstructure:"AZURE_MESSAGES_EVENTS_QUEUE_NAME"`
+	AzureQueueConnStr                   string `mapstructure:"azure.queue_conn_str"`
+	AzureMessagesConfigurationQueueName string `mapstructure:"azure.messages_conf_queue_name"`
+	AzureMessagesEventsQueueName        string `mapstructure:"azure.messages_events_queue_name"`
 	
 	// IAM
-	IAMServerAddress string `mapstructure:"IAM_SERVER_ADDRESS"`
+	IAMServerAddress string `mapstructure:"iam.server_address"`
 	
 	// Other configuration
-	SnapshotFrequency int  `mapstructure:"SNAPSHOT_FREQUENCY"`
-	EnableMigrations  bool `mapstructure:"ENABLE_MIGRATIONS"`
+	SnapshotFrequency int  `mapstructure:"snapshot_frequency"`
+	EnableMigrations  bool `mapstructure:"enable_migrations"`
+
+	// Logging
+	LogLevel  string `mapstructure:"logging.level"`
+	LogFormat string `mapstructure:"logging.format"`
 }
 
 func SetConfigFile(file string) {
@@ -42,21 +50,32 @@ func SetConfigFile(file string) {
 func LoadConfig() (Config, error) {
 	var config Config
 
-	viper.SetConfigType("env")
+	viper.SetConfigType("yaml")
+
+	// Set defaults
+	setDefaults()
 
 	if configFile != "" {
 		viper.SetConfigFile(configFile)
 	} else {
 		viper.AddConfigPath(".")
-		viper.SetConfigName("app")
+		viper.AddConfigPath("./config")
+		viper.SetConfigName("config")
 	}
 
+	// Handle environment variables
+	viper.SetEnvPrefix("CANISTER")
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
-		// Try staging config if default fails
-		viper.SetConfigName("staging.app")
-		if err := viper.ReadInConfig(); err != nil {
+		// Try app.env file if yaml not found
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			viper.SetConfigType("env")
+			viper.SetConfigName("app")
+			if err := viper.ReadInConfig(); err != nil {
+				return config, fmt.Errorf("error loading configuration: %w", err)
+			}
+		} else {
 			return config, fmt.Errorf("error loading configuration: %w", err)
 		}
 	}
@@ -69,10 +88,35 @@ func LoadConfig() (Config, error) {
 }
 
 // FormatIndex adds the configured prefix to an index name
-func FormatIndex(index string) string {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return index
-	}
-	return cfg.ElasticSearchPrefix + "-" + index
+func FormatIndex(config Config, index string) string {
+	return config.ElasticSearchPrefix + "-" + index
+}
+
+// Set default configuration values
+func setDefaults() {
+	// Database
+	viper.SetDefault("database.driver", "postgres")
+	viper.SetDefault("database.source", "postgresql://postgres:postgres@localhost:5432/canister?sslmode=disable")
+	
+	// HTTP Server
+	viper.SetDefault("server.address", "0.0.0.0:8080")
+	viper.SetDefault("server.timeout", "30s")
+	viper.SetDefault("server.cors_enabled", true)
+	viper.SetDefault("server.cors_origins", []string{"*"})
+	
+	// Elasticsearch
+	viper.SetDefault("elasticsearch.url", "http://localhost:9200")
+	viper.SetDefault("elasticsearch.prefix", "canister")
+	
+	// Azure Service Bus
+	viper.SetDefault("azure.messages_conf_queue_name", "canister-configurations")
+	viper.SetDefault("azure.messages_events_queue_name", "canister-events")
+	
+	// Other configuration
+	viper.SetDefault("snapshot_frequency", 100)
+	viper.SetDefault("enable_migrations", true)
+
+	// Logging
+	viper.SetDefault("logging.level", "info")
+	viper.SetDefault("logging.format", "json")
 }

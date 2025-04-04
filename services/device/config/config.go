@@ -3,84 +3,124 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
 
 // Config holds the service configuration
 type Config struct {
-	Server     ServerConfig
-	Database   DatabaseConfig
-	Redis      RedisConfig
-	ServiceBus ServiceBusConfig
-	NewRelic   NewRelicConfig
-	Firmware   FirmwareConfig    // New: Firmware configuration
-	OTA        OTAConfig         // New: OTA configuration
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	ServiceBus ServiceBusConfig `mapstructure:"service_bus"`
+	NewRelic   NewRelicConfig   `mapstructure:"new_relic"`
+	Firmware   FirmwareConfig   `mapstructure:"firmware"`
+	OTA        OTAConfig        `mapstructure:"ota"`
+	Logging    LoggingConfig    `mapstructure:"logging"`
 }
 
 // ServerConfig holds the HTTP server configuration
 type ServerConfig struct {
-	Port int
-	Mode string // debug, release, test
+	Port        int           `mapstructure:"port"`
+	Mode        string        `mapstructure:"mode"` // debug, release, test
+	Timeout     time.Duration `mapstructure:"timeout"`
+	CorsEnabled bool          `mapstructure:"cors_enabled"`
+	CorsOrigins []string      `mapstructure:"cors_origins"`
 }
 
 // DatabaseConfig holds the database configuration
 type DatabaseConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
+	Host            string        `mapstructure:"host"`
+	Port            int           `mapstructure:"port"`
+	User            string        `mapstructure:"user"`
+	Password        string        `mapstructure:"password"`
+	Name            string        `mapstructure:"name"`
+	SSLMode         string        `mapstructure:"sslmode"`
+	MaxOpenConns    int           `mapstructure:"max_open_conns"`
+	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 
 // RedisConfig holds the Redis configuration
 type RedisConfig struct {
-	Host     string
-	Port     int
-	Password string
-	DB       int
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+	Enabled  bool   `mapstructure:"enabled"`
 }
 
 // ServiceBusConfig holds the Azure Service Bus configuration
 type ServiceBusConfig struct {
-	ConnectionString string
-	QueueName        string
+	ConnectionString string `mapstructure:"connection_string"`
+	QueueName        string `mapstructure:"queue_name"`
 }
 
 // NewRelicConfig holds the New Relic configuration
 type NewRelicConfig struct {
-	AppName    string
-	LicenseKey string
-	Enabled    bool
+	AppName                  string `mapstructure:"app_name"`
+	LicenseKey               string `mapstructure:"license_key"`
+	Enabled                  bool   `mapstructure:"enabled"`
+	LogLevel                 string `mapstructure:"log_level"`
+	DistributedTracingEnabled bool  `mapstructure:"distributed_tracing_enabled"`
+}
+
+// FirmwareConfig holds the firmware configuration
+type FirmwareConfig struct {
+	StoragePath       string `mapstructure:"storage_path"`
+	KeysPath          string `mapstructure:"keys_path"`
+	SigningAlgorithm  string `mapstructure:"signing_algorithm"`
+	PublicKeyFile     string `mapstructure:"public_key_file"`
+	PrivateKeyFile    string `mapstructure:"private_key_file"`
+	VerifySignatures  bool   `mapstructure:"verify_signatures"`
+	RequireSignatures bool   `mapstructure:"require_signatures"`
+}
+
+// OTAConfig holds the OTA update configuration
+type OTAConfig struct {
+	ChunkSize            int    `mapstructure:"chunk_size"`
+	MaxConcurrentUpdates int    `mapstructure:"max_concurrent_updates"`
+	DownloadTimeout      int    `mapstructure:"download_timeout"`
+	MaxRetries           int    `mapstructure:"max_retries"`
+	SessionLifetime      int    `mapstructure:"session_lifetime"`
+	DeltaUpdates         bool   `mapstructure:"delta_updates"`
+	DefaultUpdateType    string `mapstructure:"default_update_type"`
+}
+
+// LoggingConfig holds the logging configuration
+type LoggingConfig struct {
+	Level  string `mapstructure:"level"`
+	Format string `mapstructure:"format"`
 }
 
 // InitConfig initializes the configuration using Viper
 func InitConfig(cfgFile string) error {
-	// Set defaults for configuration
-	setDefaults()
+	v := viper.New()
+	
+	// Set defaults
+	setDefaults(v)
 	
 	// Use config file from the flag if provided
 	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
+		v.SetConfigFile(cfgFile)
 	} else {
-		// Search for config in common directories with name "config"
-		viper.AddConfigPath(".")
-		viper.AddConfigPath("./config")
-		viper.AddConfigPath("/etc/device-service")
-		viper.SetConfigName("config")
+		// Search for config in common directories
+		v.AddConfigPath(".")
+		v.AddConfigPath("./config")
+		v.AddConfigPath("/etc/device-service")
+		v.SetConfigName("config")
 	}
 	
 	// Set environment variable prefix for config overrides
-	viper.SetEnvPrefix("DEVICE")
+	v.SetEnvPrefix("DEVICE")
 	
 	// Enable automatic environment variable binding
-	// For example, DEVICE_SERVER_PORT will override server.port
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	viper.AutomaticEnv()
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
 	
 	// Read configuration
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// Config file not found, using defaults and environment variables
 			fmt.Println("No config file found, using defaults and environment variables")
@@ -89,124 +129,100 @@ func InitConfig(cfgFile string) error {
 			return fmt.Errorf("error reading config file: %w", err)
 		}
 	} else {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
+		fmt.Println("Using config file:", v.ConfigFileUsed())
 	}
+	
+	// Set global viper instance (needed because our existing code uses the global viper)
+	viper.SetDefault("server", v.GetStringMap("server"))
+	viper.SetDefault("database", v.GetStringMap("database"))
+	viper.SetDefault("redis", v.GetStringMap("redis"))
+	viper.SetDefault("service_bus", v.GetStringMap("service_bus"))
+	viper.SetDefault("new_relic", v.GetStringMap("new_relic"))
+	viper.SetDefault("firmware", v.GetStringMap("firmware"))
+	viper.SetDefault("ota", v.GetStringMap("ota"))
+	viper.SetDefault("logging", v.GetStringMap("logging"))
 	
 	return nil
 }
 
 // setDefaults sets default values for configuration
-func setDefaults() {
+func setDefaults(v *viper.Viper) {
 	// Server defaults
-	viper.SetDefault("server.port", 8091)
-	viper.SetDefault("server.mode", "debug")
+	v.SetDefault("server.port", 8091)
+	v.SetDefault("server.mode", "debug")
+	v.SetDefault("server.timeout", "30s")
+	v.SetDefault("server.cors_enabled", true)
+	v.SetDefault("server.cors_origins", []string{"*"})
 	
 	// Database defaults
-	viper.SetDefault("database.host", "localhost")
-	viper.SetDefault("database.port", 5432)
-	viper.SetDefault("database.user", "device")
-	viper.SetDefault("database.password", "device")
-	viper.SetDefault("database.dbname", "device_service_db")
-	viper.SetDefault("database.sslmode", "disable")
+	v.SetDefault("database.host", "localhost")
+	v.SetDefault("database.port", 5432)
+	v.SetDefault("database.user", "postgres")
+	v.SetDefault("database.password", "postgres")
+	v.SetDefault("database.name", "device")
+	v.SetDefault("database.sslmode", "disable")
+	v.SetDefault("database.max_open_conns", 50)
+	v.SetDefault("database.max_idle_conns", 10)
+	v.SetDefault("database.conn_max_lifetime", "1h")
 	
 	// Redis defaults
-	viper.SetDefault("redis.host", "localhost")
-	viper.SetDefault("redis.port", 6379)
-	viper.SetDefault("redis.password", "")
-	viper.SetDefault("redis.db", 0)
+	v.SetDefault("redis.host", "localhost")
+	v.SetDefault("redis.port", 6379)
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("redis.enabled", true)
 	
 	// Service Bus defaults - no default connection string for security
-	viper.SetDefault("servicebus.queuename", "device-events")
+	v.SetDefault("service_bus.queue_name", "device-events")
 	
 	// New Relic defaults
-	viper.SetDefault("newrelic.appname", "Device Service Local")
-	viper.SetDefault("newrelic.enabled", false)
+	v.SetDefault("new_relic.app_name", "Device Service")
+	v.SetDefault("new_relic.enabled", false)
+	v.SetDefault("new_relic.log_level", "info")
+	v.SetDefault("new_relic.distributed_tracing_enabled", true)
 	
 	// Firmware defaults
-	viper.SetDefault("firmware.storage_path", "./firmware")
-	viper.SetDefault("firmware.keys_path", "./keys")
-	viper.SetDefault("firmware.signing_algorithm", "secp256r1")
-	viper.SetDefault("firmware.public_key_file", "ecdsa-public.pem")
-	viper.SetDefault("firmware.private_key_file", "ecdsa-private.pem")
-	viper.SetDefault("firmware.verify_signatures", true)
+	v.SetDefault("firmware.storage_path", "./firmware")
+	v.SetDefault("firmware.keys_path", "./keys")
+	v.SetDefault("firmware.signing_algorithm", "secp256r1")
+	v.SetDefault("firmware.public_key_file", "ecdsa-public.pem")
+	v.SetDefault("firmware.private_key_file", "ecdsa-private.pem")
+	v.SetDefault("firmware.verify_signatures", true)
+	v.SetDefault("firmware.require_signatures", false)
 	
 	// OTA defaults
-	viper.SetDefault("ota.chunk_size", 8192)
-	viper.SetDefault("ota.max_concurrent_updates", 100)
-	viper.SetDefault("ota.download_timeout", 3600)  // 1 hour
-	viper.SetDefault("ota.max_retries", 3)
-	viper.SetDefault("ota.session_lifetime", 86400) // 24 hours
-	viper.SetDefault("ota.delta_updates", false)
+	v.SetDefault("ota.chunk_size", 8192)
+	v.SetDefault("ota.max_concurrent_updates", 100)
+	v.SetDefault("ota.download_timeout", 3600)
+	v.SetDefault("ota.max_retries", 3)
+	v.SetDefault("ota.session_lifetime", 86400)
+	v.SetDefault("ota.delta_updates", false)
+	v.SetDefault("ota.default_update_type", "full")
+
+	// Logging defaults
+	v.SetDefault("logging.level", "info")
+	v.SetDefault("logging.format", "json")
 }
 
 // Load loads the configuration
 func Load() (*Config, error) {
-	// Server
-	serverConfig := ServerConfig{
-		Port: viper.GetInt("server.port"),
-		Mode: viper.GetString("server.mode"),
+	// Make sure viper is initialized
+	if viper.GetString("server.mode") == "" {
+		if err := InitConfig(""); err != nil {
+			return nil, err
+		}
 	}
 	
-	// Database
-	dbConfig := DatabaseConfig{
-		Host:     viper.GetString("database.host"),
-		Port:     viper.GetInt("database.port"),
-		User:     viper.GetString("database.user"),
-		Password: viper.GetString("database.password"),
-		DBName:   viper.GetString("database.dbname"),
-		SSLMode:  viper.GetString("database.sslmode"),
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, fmt.Errorf("unable to unmarshal config: %w", err)
 	}
 	
-	// Redis
-	redisConfig := RedisConfig{
-		Host:     viper.GetString("redis.host"),
-		Port:     viper.GetInt("redis.port"),
-		Password: viper.GetString("redis.password"),
-		DB:       viper.GetInt("redis.db"),
-	}
-	
-	// Service Bus
-	serviceBusConfig := ServiceBusConfig{
-		ConnectionString: viper.GetString("servicebus.connectionstring"),
-		QueueName:        viper.GetString("servicebus.queuename"),
-	}
-	
-	// New Relic
-	newRelicConfig := NewRelicConfig{
-		AppName:    viper.GetString("newrelic.appname"),
-		LicenseKey: viper.GetString("newrelic.licensekey"),
-		Enabled:    viper.GetBool("newrelic.enabled"),
-	}
-	
-	// Firmware configuration
-	firmwareConfig := FirmwareConfig{
-		StoragePath:       viper.GetString("firmware.storage_path"),
-		KeysPath:          viper.GetString("firmware.keys_path"),
-		SigningAlgorithm:  viper.GetString("firmware.signing_algorithm"),
-		PublicKeyFile:     viper.GetString("firmware.public_key_file"),
-		PrivateKeyFile:    viper.GetString("firmware.private_key_file"),
-		VerifySignatures:  viper.GetBool("firmware.verify_signatures"),
-		RequireSignatures: viper.GetBool("firmware.require_signatures"),
-	}
-	
-	// OTA configuration
-	otaConfig := OTAConfig{
-		ChunkSize:           viper.GetInt("ota.chunk_size"),
-		MaxConcurrentUpdates: viper.GetInt("ota.max_concurrent_updates"),
-		DownloadTimeout:     viper.GetInt("ota.download_timeout"),
-		MaxRetries:          viper.GetInt("ota.max_retries"),
-		SessionLifetime:     viper.GetInt("ota.session_lifetime"),
-		DeltaUpdates:        viper.GetBool("ota.delta_updates"),
-		DefaultUpdateType:   viper.GetString("ota.default_update_type"),
-	}
-	
-	return &Config{
-		Server:     serverConfig,
-		Database:   dbConfig,
-		Redis:      redisConfig,
-		ServiceBus: serviceBusConfig,
-		NewRelic:   newRelicConfig,
-		Firmware:   firmwareConfig,
-		OTA:        otaConfig,
-	}, nil
+	return &config, nil
+}
+
+// GetDSN returns the database connection string
+func (c *DatabaseConfig) GetDSN() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		c.Host, c.Port, c.User, c.Password, c.Name, c.SSLMode)
 }

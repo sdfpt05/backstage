@@ -1,38 +1,51 @@
+# Truck Operations Service Configuration
+
+# Server configuration
 server:
   host: "0.0.0.0"
   port: 8000
-  readTimeout: "1m"
-  writeTimeout: "1m"
-  shutdownTimeout: "10s"
-  corsWhiteList:
+  read_timeout: "1m"
+  write_timeout: "1m"
+  shutdown_timeout: "10s"
+  cors_white_list:
     - "*"
 
+# Database configuration
 database:
-  host: "localhost"
+  host: "postgres"
   port: 5432
-  user: "root"
-  password: "password"
-  name: "operations_db"
-  sslMode: "disable"
+  user: "postgres"
+  password: "postgres"
+  name: "truck"
+  ssl_mode: "disable"
   debug: false
-  maxConn: 100
-  maxIdle: 10
-  maxLife: "5m"
+  max_conn: 100
+  max_idle: 10
+  max_life: "5m"
 
-messageBus:
-  connectionString: ""
+# Message Bus configuration
+message_bus:
+  connection_string: "Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy"
   prefix: "dev"
   queues:
     - "erp-operations"
-  erpQueue: "erp-messages-operations"
+    - "truck-events"
+  erp_queue: "erp-messages-operations"
 
+# Redis configuration
 redis:
-  host: "localhost"
+  host: "redis"
   port: 6379
   password: ""
-  db: 0
+  db: 1
   enabled: true
 
+# Logging configuration
 logging:
   level: "info"
   json: false
+
+# API Versioning
+api:
+  version: "v1"
+  prefix: "/api"

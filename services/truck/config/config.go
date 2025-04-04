@@ -15,53 +15,60 @@ type Config struct {
 	MessageBus MessageBusConfig
 	Redis      RedisConfig
 	Logging    LoggingConfig
+	API        APIConfig
 }
 
 // ServerConfig holds http server configuration
 type ServerConfig struct {
-	Host            string
-	Port            int
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	ShutdownTimeout time.Duration
-	CorsWhiteList   []string
+	Host            string        `mapstructure:"host"`
+	Port            int           `mapstructure:"port"`
+	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+	CorsWhiteList   []string      `mapstructure:"cors_white_list"`
 }
 
 // DatabaseConfig holds database configuration
 type DatabaseConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	Name     string
-	SSLMode  string
-	Debug    bool
-	MaxConn  int
-	MaxIdle  int
-	MaxLife  time.Duration
+	Host     string        `mapstructure:"host"`
+	Port     int           `mapstructure:"port"`
+	User     string        `mapstructure:"user"`
+	Password string        `mapstructure:"password"`
+	Name     string        `mapstructure:"name"`
+	SSLMode  string        `mapstructure:"ssl_mode"`
+	Debug    bool          `mapstructure:"debug"`
+	MaxConn  int           `mapstructure:"max_conn"`
+	MaxIdle  int           `mapstructure:"max_idle"`
+	MaxLife  time.Duration `mapstructure:"max_life"`
 }
 
 // MessageBusConfig holds message bus configuration
 type MessageBusConfig struct {
-	ConnectionString string
-	Prefix           string
-	Queues           []string
-	ERPQueue         string
+	ConnectionString string   `mapstructure:"connection_string"`
+	Prefix           string   `mapstructure:"prefix"`
+	Queues           []string `mapstructure:"queues"`
+	ERPQueue         string   `mapstructure:"erp_queue"`
 }
 
 // RedisConfig holds Redis configuration
 type RedisConfig struct {
-	Host     string
-	Port     int
-	Password string
-	DB       int
-	Enabled  bool
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+	Enabled  bool   `mapstructure:"enabled"`
 }
 
 // LoggingConfig holds logging configuration
 type LoggingConfig struct {
-	Level string
-	JSON  bool
+	Level string `mapstructure:"level"`
+	JSON  bool   `mapstructure:"json"`
+}
+
+// APIConfig holds API configuration
+type APIConfig struct {
+	Version string `mapstructure:"version"`
+	Prefix  string `mapstructure:"prefix"`
 }
 
 // Load loads configuration from file and environment variables
@@ -89,6 +96,14 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Create nested configuration structure
+	v.SetDefault("server", v.GetStringMap("server"))
+	v.SetDefault("database", v.GetStringMap("database"))
+	v.SetDefault("message_bus", v.GetStringMap("message_bus"))
+	v.SetDefault("redis", v.GetStringMap("redis"))
+	v.SetDefault("logging", v.GetStringMap("logging"))
+	v.SetDefault("api", v.GetStringMap("api"))
+
 	var config Config
 	if err := v.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
@@ -97,40 +112,59 @@ func Load() (*Config, error) {
 	return &config, nil
 }
 
+// GetConnectionString builds the database connection string
+func (c *DatabaseConfig) GetConnectionString() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		c.Host, c.Port, c.User, c.Password, c.Name, c.SSLMode)
+}
+
+// GetRedisURL builds the Redis URL
+func (c *RedisConfig) GetRedisURL() string {
+	if c.Password == "" {
+		return fmt.Sprintf("redis://%s:%d/%d", c.Host, c.Port, c.DB)
+	}
+	return fmt.Sprintf("redis://:%s@%s:%d/%d", c.Password, c.Host, c.Port, c.DB)
+}
+
 // setDefaults sets default values for configuration
 func setDefaults(v *viper.Viper) {
 	// Server defaults
-	v.SetDefault("server.host", "localhost")
+	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8000)
-	v.SetDefault("server.readTimeout", "1m")
-	v.SetDefault("server.writeTimeout", "1m")
-	v.SetDefault("server.shutdownTimeout", "10s")
-	v.SetDefault("server.corsWhiteList", []string{"*"})
+	v.SetDefault("server.read_timeout", "1m")
+	v.SetDefault("server.write_timeout", "1m")
+	v.SetDefault("server.shutdown_timeout", "10s")
+	v.SetDefault("server.cors_white_list", []string{"*"})
 
 	// Database defaults
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
-	v.SetDefault("database.user", "root")
-	v.SetDefault("database.password", "password")
-	v.SetDefault("database.name", "operations_db")
-	v.SetDefault("database.sslMode", "disable")
+	v.SetDefault("database.user", "postgres")
+	v.SetDefault("database.password", "postgres")
+	v.SetDefault("database.name", "truck")
+	v.SetDefault("database.ssl_mode", "disable")
 	v.SetDefault("database.debug", false)
-	v.SetDefault("database.maxConn", 100)
-	v.SetDefault("database.maxIdle", 10)
-	v.SetDefault("database.maxLife", "5m")
+	v.SetDefault("database.max_conn", 100)
+	v.SetDefault("database.max_idle", 10)
+	v.SetDefault("database.max_life", "5m")
 
 	// MessageBus defaults
-	v.SetDefault("messageBus.prefix", "dev")
-	v.SetDefault("messageBus.erpQueue", "erp-messages-operations")
+	v.SetDefault("message_bus.prefix", "dev")
+	v.SetDefault("message_bus.queues", []string{"erp-operations", "truck-events"})
+	v.SetDefault("message_bus.erp_queue", "erp-messages-operations")
 
 	// Redis defaults
 	v.SetDefault("redis.host", "localhost")
 	v.SetDefault("redis.port", 6379)
 	v.SetDefault("redis.password", "")
-	v.SetDefault("redis.db", 0)
-	v.SetDefault("redis.enabled", false)
+	v.SetDefault("redis.db", 1)
+	v.SetDefault("redis.enabled", true)
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.json", false)
+
+	// API defaults
+	v.SetDefault("api.version", "v1")
+	v.SetDefault("api.prefix", "/api")
 }

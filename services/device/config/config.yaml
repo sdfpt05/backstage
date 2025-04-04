@@ -4,33 +4,42 @@
 server:
   port: 8091
   mode: debug # Options: debug, release, test
+  timeout: 30s
+  cors_enabled: true
+  cors_origins: ["*"]
 
 # Database configuration
 database:
-  host: localhost
+  host: postgres
   port: 5432
-  user: device
-  password: device
-  dbname: device_service_db
+  user: postgres
+  password: postgres
+  name: device
   sslmode: disable
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
 
 # Redis configuration
 redis:
-  host: localhost
+  host: redis
   port: 6379
   password: "" # Empty for no password
   db: 0
+  enabled: true
 
 # Azure Service Bus configuration
-servicebus:
-  connectionstring: "" # Set in environment or secure config
-  queuename: device-events
+service_bus:
+  connection_string: "Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy"
+  queue_name: "device-events"
 
 # New Relic monitoring configuration
-newrelic:
-  appname: Device Service Local
-  licensekey: "" # Set in environment or secure config
+new_relic:
+  app_name: "Device Service"
+  license_key: ""
   enabled: false
+  log_level: "info"
+  distributed_tracing_enabled: true
 
 # Firmware release management configuration
 firmware:
@@ -51,3 +60,8 @@ ota:
   session_lifetime: 86400 # 24 hours
   delta_updates: false
   default_update_type: "full"
+
+# Logging configuration
+logging:
+  level: "info" # debug, info, warn, error
+  format: "json" # json, text
