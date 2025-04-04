@@ -44,9 +44,11 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apk --no-cache add ca-certificates tzdata
 
-# Copy the binary from builder (fixed from sales to sales-service)
+# Copy the binary from builder
 COPY --from=builder /app/services/sales/sales-service .
-COPY --from=builder /app/services/sales/app.env .
+
+# Copy config directory instead of env file
+COPY --from=builder /app/services/sales/config /app/config
 
 # Create a non-root user and set permissions
 RUN adduser -D -g '' appuser && \
@@ -59,5 +61,5 @@ EXPOSE 8080
 # Set entry point
 ENTRYPOINT ["./sales-service"]
 
-# Default command - based on available commands in cmd package
+# Default command based on cmd package
 CMD ["api"]

@@ -47,8 +47,10 @@ WORKDIR /app
 # Install CA certificates
 RUN apk --no-cache add ca-certificates tzdata
 
-# Copy the binary from builder (using correct name from cmd/root.go)
+# Copy the binary from builder
 COPY --from=builder /app/services/truck/operations-service /app/operations-service
+
+# Copy config directory
 COPY --from=builder /app/services/truck/config /app/config
 
 # Create a non-root user and group

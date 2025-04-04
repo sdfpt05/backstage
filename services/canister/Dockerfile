@@ -46,7 +46,9 @@ RUN apk --no-cache add ca-certificates tzdata
 
 # Copy the binary from builder
 COPY --from=builder /app/services/canister/canister-service .
-COPY --from=builder /app/services/canister/app.env .
+
+# Copy config directory instead of single env file
+COPY --from=builder /app/services/canister/config /app/config
 
 # Create a non-root user and set permissions
 RUN adduser -D -g '' appuser && \

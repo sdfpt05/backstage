@@ -30,7 +30,7 @@ redis:
 
 # Azure Service Bus configuration
 service_bus:
-  connection_string: "Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy"
+  connection_string: "Endpoint=sb://staging-nvk-uksouth-ingestor-svcb.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=wpsyvmkLaD7K7I0pkV1jYIfr5D8JnKqiJl94RvsRWp8="
   queue_name: "device-events"
 
 # New Relic monitoring configuration

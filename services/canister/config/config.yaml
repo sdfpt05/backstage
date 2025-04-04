@@ -14,14 +14,14 @@ server:
 
 # Elasticsearch configuration
 elasticsearch:
-  url: "http://elasticsearch:9200"
-  username: ""
-  password: ""
-  prefix: "canister"
+  url: "https://novek-es.es.westeurope.azure.elastic-cloud.com:9243"
+  username: "staging"
+  password: "stagestage#"
+  prefix: "staging-prod"
 
 # Azure Service Bus configuration
 azure:
-  queue_conn_str: "Endpoint=sb://localhost/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dummy"
+  queue_conn_str: "Endpoint=sb://staging-nvk-uksouth-ingestor-svcb.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=wpsyvmkLaD7K7I0pkV1jYIfr5D8JnKqiJl94RvsRWp8="
   messages_conf_queue_name: "canister-configurations"
   messages_events_queue_name: "canister-events"
 

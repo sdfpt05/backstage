@@ -44,7 +44,9 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /app/services/device/device-service .
-COPY --from=builder /app/services/device/config.yaml ./config.yaml
+
+# Copy config directory
+COPY --from=builder /app/services/device/config /app/config
 
 # Expose service port
 EXPOSE 8091
